@@ -28,6 +28,7 @@ from pathlib import Path
 
 from browser import BrowserSession
 from config import OUTPUT_DIR, load_config
+from excel_tools import ExcelSession
 from llm import LLMClient, LLMError
 from logger import TaskLogger
 
@@ -36,10 +37,17 @@ from logger import TaskLogger
 # *thinks* is fine -- see README section 4 ("Safety").
 ALWAYS_CONFIRM_ACTIONS = {"type"}  # confirmed only when submit=True or text targets a sensitive field
 
+# Excel actions that touch disk always confirm, the same way a sensitive
+# browser click does -- reading/writing the in-memory workbook is cheap to
+# undo (just don't save), but excel_save overwrites a real file.
+ALWAYS_CONFIRM_EXCEL_ACTIONS = {"excel_save"}
+
 # Actions worth VERIFYING after they run -- these are the ones expected to
 # visibly change the page (a new URL, different content, or both). Actions
 # like "scroll" or a plain "type" without submitting don't reliably change
-# either signal, so checking them would just be noise.
+# either signal, so checking them would just be noise. Excel actions aren't
+# here: they're deterministic and report their own result directly (see
+# _execute_action), so there's nothing ambiguous for VERIFY to catch.
 VERIFIABLE_ACTIONS = {"goto", "click", "type", "go_back"}
 
 
@@ -123,6 +131,27 @@ def verify_action_effect(pending: dict, observation, logger: TaskLogger, history
             history[-1] += f" [VERIFY: {note}]"
 
 
+def _ensure_browser_started(session: BrowserSession) -> None:
+    """
+    Launches Chrome on first use rather than unconditionally at task start.
+    A task that only ever calls excel_* actions should never touch Chrome
+    at all -- launching it anyway would be a pointless dependency and a
+    slow, pointless window popping up for no reason.
+    """
+    if session.page is not None:
+        return
+    try:
+        session.start()
+    except Exception as e:
+        raise TaskCannotBeCompleted(
+            _explain(
+                "Chrome could not be launched.",
+                "Google Chrome may not be installed, or Playwright cannot find it.",
+                "Install Chrome, then run 'python -m playwright install chrome' and try again.",
+            )
+        ) from e
+
+
 def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | None = None) -> dict:
     """
     Runs one task end-to-end and returns a result dict. Also writes a log
@@ -133,7 +162,8 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
     """
     logger = TaskLogger(Path(__file__).parent / "logs", task)
     llm = llm_client or LLMClient.from_config(config)
-    session = BrowserSession(config)
+    session = BrowserSession(config)  # Chrome itself isn't launched until first use -- see _ensure_browser_started
+    excel_session = ExcelSession()
 
     history: list[str] = []
     result_summary = None
@@ -143,38 +173,35 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
     pending_verify: dict | None = None
 
     try:
-        session.start()
-    except Exception as e:
-        msg = _explain(
-            "Chrome could not be launched.",
-            "Google Chrome may not be installed, or Playwright cannot find it.",
-            "Install Chrome, then run 'python -m playwright install chrome' and try again.",
-        )
-        logger.error(f"{e}\n{msg}")
-        logger.finish("FAILED: could not launch browser")
-        return {"success": False, "result": msg}
-
-    try:
         for step in range(1, config.max_steps + 1):
-            try:
-                observation = session.observe(max_chars=config.max_dom_chars)
-            except Exception as e:
-                raise TaskCannotBeCompleted(
-                    _explain(
-                        f"Could not read the current page ({session.page.url if session.page else 'unknown'}).",
-                        "The page may still be loading, or it uses an unusual structure Playwright can't parse.",
-                        "Try increasing STEP_TIMEOUT_MS in .env, or simplify the task.",
-                    )
-                ) from e
+            # OBSERVE only applies to the browser arm. Before the browser
+            # has been used at all (session.page is None -- e.g. an
+            # Excel-only task, or a mixed task that hasn't reached a
+            # browser action yet), there's nothing to observe; llm.py
+            # handles observation=None by saying so in the prompt instead
+            # of crashing on it.
+            if session.page is None:
+                observation = None
+            else:
+                try:
+                    observation = session.observe(max_chars=config.max_dom_chars)
+                except Exception as e:
+                    raise TaskCannotBeCompleted(
+                        _explain(
+                            f"Could not read the current page ({session.page.url}).",
+                            "The page may still be loading, or it uses an unusual structure Playwright can't parse.",
+                            "Try increasing STEP_TIMEOUT_MS in .env, or simplify the task.",
+                        )
+                    ) from e
 
             # --- VERIFY: check the effect of the PREVIOUS step's action,
             # now that this fresh OBSERVE has happened, before deciding
             # anything new. See verify_action_effect()'s docstring. ---
-            if pending_verify is not None:
+            if pending_verify is not None and observation is not None:
                 verify_action_effect(pending_verify, observation, logger, history)
                 pending_verify = None
 
-            if observation.looks_like_login and step > 1:
+            if observation is not None and observation.looks_like_login and step > 1:
                 logger.note(f"Login/authentication wall detected at {observation.url}")
                 wall_offer_attempts += 1
                 if offer_manual_resolution(observation.url, config, dry_run, logger, wall_offer_attempts):
@@ -204,7 +231,8 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
             action = decision.get("action", "")
             args = decision.get("args", {}) or {}
             thought = decision.get("thought", "")
-            logger.action(step, thought, action, args, observation.url)
+            current_url = observation.url if observation is not None else "(no browser page open)"
+            logger.action(step, thought, action, args, current_url)
             print(f"\nStep {step}: {thought}")
             print(f"  -> {action} {args}")
 
@@ -227,13 +255,13 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
                 )
 
             if action == "login_required":
-                logger.note(f"Model reported login_required at {observation.url}: {args.get('reason', '')}")
+                logger.note(f"Model reported login_required at {current_url}: {args.get('reason', '')}")
                 wall_offer_attempts += 1
-                if offer_manual_resolution(observation.url, config, dry_run, logger, wall_offer_attempts):
+                if offer_manual_resolution(current_url, config, dry_run, logger, wall_offer_attempts):
                     continue
                 raise TaskCannotBeCompleted(
                     _explain(
-                        f"Manual login is required at {observation.url}.",
+                        f"Manual login is required at {current_url}.",
                         args.get("reason", "The model detected an authentication requirement."),
                         f"Log in manually in the Chrome profile this agent uses "
                         f"({config.chrome_user_data_dir}), then re-run the task.",
@@ -268,7 +296,7 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
                 continue
 
             try:
-                _execute_action(session, action, args, config, dry_run)
+                result_text = _execute_action(session, excel_session, action, args, config, dry_run)
             except IndexError as e:
                 logger.error(str(e))
                 history[-1] += " [FAILED: invalid element index]"
@@ -280,16 +308,29 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
                 # per-action failure by the broader except below.
                 raise
             except Exception as e:
+                # Catches ExcelError (bad path/sheet/cell, file locked, ...)
+                # as well as any other action-execution failure.
                 logger.error(f"Action '{action}' failed: {e}")
                 history[-1] += f" [FAILED: {e}]"
                 continue
+
+            # excel_* actions return a description of what happened (there's
+            # no "observe" step for them to be picked up by otherwise) --
+            # put it straight into the action's own history entry so the
+            # model sees it on the next turn. Browser actions return None
+            # here; their effect is picked up by the next OBSERVE + VERIFY.
+            if result_text:
+                history[-1] += f" [RESULT: {result_text}]"
 
             # ACT succeeded without raising -- schedule the VERIFY check for
             # the top of the next loop iteration, once we have a fresh
             # OBSERVE to compare against. A plain "type" that isn't
             # submitting anything isn't expected to change the URL or page
-            # text, so it's excluded to avoid false alarms.
-            if action in VERIFIABLE_ACTIONS and (action != "type" or args.get("submit")):
+            # text, so it's excluded to avoid false alarms. Excel actions
+            # are never in VERIFIABLE_ACTIONS. And there's nothing to
+            # compare against yet if this was the very first browser action
+            # (observation was None going into this step).
+            if observation is not None and action in VERIFIABLE_ACTIONS and (action != "type" or args.get("submit")):
                 pending_verify = {
                     "action": action, "args": args,
                     "pre_url": observation.url, "pre_text": observation.visible_text,
@@ -310,6 +351,7 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
         logger.error(error_message)
     finally:
         session.stop()
+        excel_session.close()
 
     if error_message:
         logger.finish(f"FAILED\n{error_message}")
@@ -320,8 +362,35 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
     return {"success": True, "result": result_summary, "output_path": str(output_path)}
 
 
-def _execute_action(session: BrowserSession, action: str, args: dict, config, dry_run: bool) -> None:
+def _execute_action(
+    session: BrowserSession, excel_session: ExcelSession, action: str, args: dict, config, dry_run: bool
+) -> str | None:
+    """
+    Dispatches one action to whichever arm owns it. Browser actions return
+    None (their effect is picked up by the next OBSERVE + VERIFY instead);
+    excel_* actions return a short result string that the caller puts
+    straight into the action's own history entry, since there's no
+    equivalent "observe the whole environment" step for a spreadsheet.
+    """
+    if action.startswith("excel_"):
+        if action in ALWAYS_CONFIRM_EXCEL_ACTIONS and config.confirm_sensitive_actions and not dry_run:
+            target = args.get("path") or excel_session.path or "(current file)"
+            if not ask_confirmation(f"Ready to save the workbook to '{target}', overwriting it. Continue?"):
+                raise TaskCannotBeCompleted(
+                    _explain(
+                        "User declined a sensitive action.",
+                        f"Saving (overwriting) '{target}' was flagged for confirmation and declined.",
+                        "Re-run the task and confirm if saving was actually intended.",
+                    )
+                )
+        return excel_session.execute(action, args)
+
     if action == "goto":
+        # The only browser action that can legitimately be the very first
+        # one in a task -- everything else (click, type, scroll, ...)
+        # operates on an element index that can only have come from an
+        # OBSERVATION, which means goto (or an earlier one) already ran.
+        _ensure_browser_started(session)
         session.goto(args["url"])
     elif action == "click":
         index = int(args["index"])

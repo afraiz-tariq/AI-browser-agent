@@ -1,83 +1,139 @@
-# AI Browser Agent (Phase 1)
+# AI Browser Agent
 
-A small, local, command-line AI agent that reads a plain-English task,
-uses an LLM to decide what to click/type/read, and drives Google Chrome
-via Playwright until the task is done.
+A small, local, command-line AI agent that reads a plain-English task, uses
+an LLM to decide what to do, and acts on it through one or more "arms" --
+Chrome (via Playwright) and Excel (via openpyxl so far) -- until the task
+is done.
 
-Phase 1 is deliberately narrow: it only automates Chrome (no desktop
-control, no GUI, no database, no multi-agent orchestration). The goal is a
-prototype you can actually run today and understand end-to-end.
+**Status:** Phase 1 (the browser arm) is complete and has been validated
+with real end-to-end runs -- search, multi-page research, form-filling with
+the safety confirmation firing correctly. Phase 2 is in progress: the Excel
+arm above is its first piece. Windows desktop automation and a phone/LAN
+command interface are designed but not yet built (see **Phase 2 design**
+below).
 
 ## Architecture
+
+The agent is one orchestrator loop that can act through multiple arms, not
+a browser-specific program with automation bolted on:
 
 ```
 User (types a task at the prompt)
         |
         v
-   agent.py            <- the observe/decide/act/verify loop lives here
+   agent.py              <- the observe/decide/act/verify loop lives here
         |
         v
-     llm.py  <-------------------------+
-        |  (asks: "given this page,     |
-        |   what should I do next?")    |
-        v                                |
-   browser.py  ----> Playwright ----> Chrome ----> Website
-        |                                          |
-        +------------- observation ----------------+
-        (URL, title, list of clickable/typeable elements, visible text)
+     llm.py  <---------------------------------+
+        |  (one flat list of tools from BOTH     |
+        |   arms; the model picks exactly one)   |
+        v                                         |
+   ┌────┴─────┐                                   |
+   v          v                                   |
+browser.py  excel_tools.py                        |
+   |          |                                   |
+Playwright  openpyxl                              |
+   |          |                                   |
+Chrome ---> Website                                |
+   |                                               |
+   +----------------- result / observation --------+
 ```
 
 Concretely, each step of a task is:
 
-1. **Observe** -- `browser.py` asks Playwright for the current page's URL,
-   title, a numbered list of interactive elements (links, buttons, inputs
-   -- using the DOM/accessibility tree, not a screenshot), and a snippet of
-   visible text.
+1. **Observe** -- if a browser page is open, `browser.py` asks Playwright
+   for its URL, title, a numbered list of interactive elements (links,
+   buttons, inputs -- using the DOM/accessibility tree, not a screenshot),
+   and a snippet of visible text. The Excel arm has no equivalent
+   "observe the whole environment" step -- its actions report their own
+   result directly (see step 3).
 2. **Decide** -- `llm.py` sends the task, a short history of what's been
-   tried, and that observation to the configured LLM, exposing each possible
-   action (`goto`, `click`, `type`, `scroll`, `extract`, `finish`,
-   `login_required`, ...) as a native tool/function call. The model must
-   call exactly one, which is what keeps required fields (like `finish`
-   needing an actual, non-empty answer) enforced by the API itself rather
-   than hoped for from free-text JSON.
-3. **Act** -- `agent.py` executes that action through `browser.py`. Actions
-   that look like they submit a form, send something, or delete/purchase
-   something first ask you `[y/n]` before running (see **Safety** below).
-4. **Verify** -- once the *next* OBSERVE happens (step 1 again), the agent
-   compares the page's URL, visible text, and every interactive element's
-   state (checked/selected/value -- see `state_fingerprint` in
-   `browser.py`) to what they were right before the action ran. If an
-   action that's supposed to change the page (a navigation, a click, a
-   submitted form) left all of that completely unchanged, that's flagged
-   immediately in the action's own history entry -- e.g. `[VERIFY: no
-   observable change after click ... -- it may not have worked]` -- so the
-   model finds out on its very next decision instead of a human having to
-   notice a stuck task several steps later. This needs no extra API calls
-   (just comparing two observations the loop already made) and only a
-   handful of cheap extra Playwright reads per step. Including element
-   state (not just URL/text) matters in practice: an earlier version only
-   checked URL and visible text, and a checkbox click -- which changes
-   neither -- convinced the model its own successful click had failed,
-   sending it into a repeated-clicking spiral until it tripped the
-   stuck-loop guard below.
+   tried (including every past excel_* action's own result), and the
+   browser observation (or a note that no page is open yet) to the
+   configured LLM, exposing **every action from every arm as one flat list
+   of native tools/functions** -- `goto`, `click`, `type`, `scroll`,
+   `extract`, `finish`, `login_required` from the browser arm, and
+   `excel_open`, `excel_read_cell`, `excel_read_range`, `excel_write_cell`,
+   `excel_save`, `excel_list_sheets` from the spreadsheet arm. The model
+   calls exactly one tool, from either arm, on each turn -- there's no
+   separate "pick an arm first" step. Native tool calling also keeps
+   required fields (like `finish` needing an actual, non-empty answer)
+   enforced by the API itself rather than hoped for from free-text JSON.
+3. **Act** -- `agent.py` dispatches that action to whichever arm owns it
+   (by name: `excel_*` goes to `excel_tools.py`, everything else to
+   `browser.py`). Browser actions that look like they submit a form, send
+   something, or delete/purchase something, and `excel_save` (it
+   overwrites a real file), all ask you `[y/n]` before running (see
+   **Safety** below). Chrome itself is only launched the first time a
+   browser action actually runs -- a pure "update this spreadsheet" task
+   never touches it at all.
+4. **Verify** -- once the *next* OBSERVE happens (step 1 again) for a
+   browser action, the agent compares the page's URL, visible text, and
+   every interactive element's state (checked/selected/value -- see
+   `state_fingerprint` in `browser.py`) to what they were right before the
+   action ran. If an action that's supposed to change the page (a
+   navigation, a click, a submitted form) left all of that completely
+   unchanged, that's flagged immediately in the action's own history entry
+   -- e.g. `[VERIFY: no observable change after click ... -- it may not
+   have worked]` -- so the model finds out on its very next decision
+   instead of a human having to notice a stuck task several steps later.
+   This needs no extra API calls (just comparing two observations the loop
+   already made) and only a handful of cheap extra Playwright reads per
+   step. Excel actions don't need this: they're deterministic and already
+   report their own result directly in step 3. Including element state
+   (not just URL/text) in the comparison matters in practice: an earlier
+   version only checked URL and visible text, and a checkbox click --
+   which changes neither -- convinced the model its own successful click
+   had failed, sending it into a repeated-clicking spiral until it tripped
+   the stuck-loop guard below.
 5. Repeat, up to `MAX_STEPS` times, until the model returns `finish` (or
    the agent detects a login wall, a stuck loop, or a hard error).
 
 Every step is written to a per-task log file, and the final answer is also
 saved as JSON under `output/`.
 
-This loop is intentionally implemented directly (rather than pulling in the
-`browser-use` package) so each step is visible in ~250 lines of commented
-Python -- see `agent.py`, `browser.py`, and `llm.py` for the actual
-mechanics.
+This loop is intentionally implemented directly (rather than pulling in a
+heavier agent framework) so each step is visible in a few hundred lines of
+commented Python -- see `agent.py`, `browser.py`, `excel_tools.py`, and
+`llm.py` for the actual mechanics.
+
+## Phase 2 design
+
+The plan discussed for extending this beyond the browser:
+
+- **Flat tool dispatch across arms** (implemented, see above) rather than a
+  two-level "pick an arm, then pick an action within it" -- a model
+  choosing from a few dozen well-named tools works fine, and hierarchy
+  would just add a round-trip for no benefit at this scale.
+- **Excel via openpyxl for closed files** (implemented). `xlwings`/COM for
+  reading a workbook the user already has open live in Excel is a
+  deliberate scope cut, not forgotten -- it would be a second, separate
+  tool this same arm could grow if a real task needs it.
+- **Windows desktop automation is scoped down and comes later, not next.**
+  General "understand and click any button in any Windows app" is far
+  more open-ended and brittle than either the browser (a real DOM) or
+  Excel (a real file format) -- there's no accessibility-tree equivalent
+  as reliable as either. When it's built, it should start narrow (launch
+  an app, handle known dialogs like Open/Save) rather than aiming for
+  general-purpose UI understanding, and its `[y/n]` confirmation gate
+  should probably default to *every* action needing confirmation (opt-out
+  for a short allowlist), not the browser arm's opt-in keyword-matching --
+  a Windows arm's blast radius (other apps' data, system dialogs) is
+  bigger than a browser tab's.
+- **Phone/LAN command interface, later still.** A local HTTP endpoint
+  `agent.py` listens on, so a phone on the same Wi-Fi can submit a task
+  and get the result back. No cloud exposure -- but even LAN-only should
+  have a minimal shared-secret check, since "same Wi-Fi" still means any
+  other device on it could otherwise hit the endpoint.
 
 ## Project structure
 
 ```
 ai_browser_agent/
 ├── agent.py          # CLI entry point + the observe/decide/act/verify loop
-├── browser.py         # Playwright wrapper: launch Chrome, observe page, run actions
-├── llm.py             # Provider-agnostic LLM client (OpenAI / Anthropic / mock)
+├── browser.py         # Browser arm: Playwright wrapper (launch Chrome, observe page, run actions)
+├── excel_tools.py      # Excel arm: openpyxl wrapper (open/read/write/save .xlsx files)
+├── llm.py             # Provider-agnostic LLM client (OpenAI / Anthropic / mock); merges both arms' tools
 ├── logger.py           # Per-task plain-text logging (with secret redaction)
 ├── config.py           # Loads and validates .env settings
 ├── requirements.txt
@@ -85,7 +141,7 @@ ai_browser_agent/
 ├── .gitignore
 ├── logs/               # One .log file per task run (gitignored)
 ├── output/             # One .json result file per successful task (gitignored)
-└── tests/              # Offline tests (mock LLM + local fixture pages, no internet needed)
+└── tests/              # Offline tests (mock LLM + local fixture pages + tmp .xlsx files, no internet needed)
 ```
 
 ## Installation (Windows)
@@ -153,11 +209,22 @@ When the task finishes, the final answer is printed and saved to
 
 ### Example tasks
 
+Browser arm:
+
 1. `Open Google and search for OpenAI.`
 2. `Search Google for the latest information about RF impedance matching and summarize the top result.`
 3. `Search Google for the top 5 companies developing RF plasma impedance matching systems and give me a short comparison.`
 4. `Go to Wikipedia, search for "Playwright (software)", and save a two-sentence summary to a file.`
 5. `Open https://news.ycombinator.com, find the top story, and tell me its title and score.`
+
+Excel arm (paths are examples -- use a real path on your machine):
+
+6. `Open C:\Users\me\Desktop\report.xlsx, read cell A1, and tell me what's in it.`
+7. `Create a new spreadsheet at C:\Users\me\Desktop\test.xlsx with "Hello" in A1, then save it.`
+
+Mixed (both arms in one task):
+
+8. `Open C:\Users\me\Desktop\suppliers.xlsx, read the company name in A2, search for it on Google, and write a one-line summary of what you find into B2, then save.`
 
 ### Milestones (recommended order to test in)
 
@@ -170,6 +237,12 @@ When the task finishes, the final answer is printed and saved to
    `Open <url>, find <information>, and save the result.` -- confirms
    nothing about the implementation is hard-coded to Google; the task and
    URL are just plain text typed at the prompt.
+4. **Milestone 4** (Phase 2, Excel arm): task #6 or #7 above -- confirms
+   the Excel arm works on its own, and that a pure-Excel task never even
+   launches Chrome (watch: no browser window should open).
+5. **Milestone 5** (Phase 2, mixed arms): task #8 above -- confirms the
+   orchestrator can move between arms within a single task and that data
+   read from one arm can be used in an action on the other.
 
 ## Configuration (`.env`)
 
@@ -208,6 +281,12 @@ models later -- nothing else in the code references a specific provider.
   Ready to click <button 'Submit'>. This looks like it may have side effects. Continue? [y/n]
   ```
   Declining stops the task immediately with an explanation.
+- `excel_save` gets the same treatment -- it's the only Excel action that
+  touches disk (reads and `excel_write_cell` only change the in-memory
+  workbook), so it always asks before overwriting a real file:
+  ```
+  Ready to save the workbook to 'C:\...\report.xlsx', overwriting it. Continue? [y/n]
+  ```
 - No password, API key, cookie, or session token is ever written to a log
   file (`logger.py` also redacts anything that looks like a secret as a
   defense in depth).

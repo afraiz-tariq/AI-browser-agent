@@ -25,15 +25,30 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any
 
+from excel_tools import EXCEL_ACTION_SPECS
+
 
 class LLMError(Exception):
     """Raised when the LLM cannot be reached or returns something unusable."""
 
 
-SYSTEM_PROMPT = """You are the reasoning engine of a browser automation agent.
-You are given a TASK, a short ACTION HISTORY, and an OBSERVATION of the
-current webpage (its URL, title, a numbered list of interactive elements,
-and a snippet of visible text).
+SYSTEM_PROMPT = """You are the reasoning engine of a personal automation agent.
+It has more than one "arm" it can act through -- a browser (Chrome, via
+Playwright) and a spreadsheet arm (Excel .xlsx files, via openpyxl) -- and
+you decide which tool to call on each turn, mixing arms freely within one
+task (e.g. read data out of Excel, look something up in the browser, write
+the result back to Excel).
+
+You are given a TASK, a short ACTION HISTORY, and an OBSERVATION. The
+OBSERVATION describes the current webpage (its URL, title, a numbered list
+of interactive elements, and a snippet of visible text) whenever a browser
+page is open; if no browser page has been opened yet (e.g. this task hasn't
+needed one), it says so instead -- that's expected and not an error. There
+is no equivalent "observation" for the spreadsheet arm: instead, every
+excel_* action's result (the cell value read, confirmation of what was
+written, the list of sheets, ...) is appended directly to that action's own
+entry in the ACTION HISTORY, so read the history to see what Excel actions
+have already told you.
 
 Call exactly one of the provided tools to choose the single next action.
 You must call a tool on every turn -- there is no plain-text reply.
@@ -41,29 +56,36 @@ You must call a tool on every turn -- there is no plain-text reply.
 Rules:
 - Every tool call includes "thought": one short sentence on what you see and
   why you're doing this. Keep it brief to save tokens.
-- Only use element indices that appear in the CURRENT observation. They
-  change on every page, so never reuse an index from an earlier step.
+- Only use browser element indices that appear in the CURRENT observation.
+  They change on every page, so never reuse an index from an earlier step.
+- excel_open must be called before any other excel_* action on a given
+  file. excel_write_cell only changes the in-memory workbook -- call
+  excel_save when all edits for the task are done, or they're lost.
 - Prefer the simplest path to the goal. Do not repeat an action that already
   failed or had no visible effect -- try something different instead.
-- If the page shows a login form, a "sign in to continue" wall, a CAPTCHA,
+- If a webpage shows a login form, a "sign in to continue" wall, a CAPTCHA,
   or 2FA/MFA prompt, call login_required immediately. Never try to guess
   credentials, solve a CAPTCHA, or bypass MFA.
-- finish's "summary" must always contain real content from the page, never
-  a status confirmation. "Search results for X are displayed" or "Task
-  complete" are NOT valid summaries and will be rejected -- read the
-  VISIBLE TEXT in the observation and report the actual information it
-  contains (e.g. the titles/snippets of the top results, the fact(s) found,
-  the data extracted). Even if the task only asked you to perform an action
-  (like "search for X") rather than asking a question, still summarize what
-  the results actually show -- that IS the useful output of the task.
+- finish's "summary" must always contain real content -- from the page
+  visited and/or the Excel data read or written -- never a status
+  confirmation. "Search results for X are displayed" or "Task complete"
+  are NOT valid summaries and will be rejected -- report the actual
+  information found (titles/snippets, facts, figures, the cell values
+  read or written). Even if the task only asked you to perform an action
+  rather than asking a question, still summarize what happened -- that IS
+  the useful output of the task.
 """
 
-# One entry per action the agent loop understands (see agent.py's
+# One entry per browser action the agent loop understands (see agent.py's
 # _execute_action). Each becomes a separate tool/function so the API itself
 # enforces the required fields -- e.g. it's not possible to "call finish"
 # without also generating a non-empty "summary" string, because that's a
 # required parameter of the finish tool, not a key in a hand-written blob.
-ACTION_SPECS: dict[str, dict[str, Any]] = {
+# EXCEL_ACTION_SPECS (imported above, defined in excel_tools.py) are merged
+# in below so both arms show up as one flat tool list -- a single model
+# call picks whichever action fits, browser or spreadsheet, with no
+# separate "pick an arm first" step.
+BROWSER_ACTION_SPECS: dict[str, dict[str, Any]] = {
     "goto": {
         "description": "Navigate the browser to an absolute URL.",
         "properties": {"url": {"type": "string", "description": "Absolute URL to navigate to."}},
@@ -125,6 +147,10 @@ ACTION_SPECS: dict[str, dict[str, Any]] = {
         "required": ["reason"],
     },
 }
+
+# The flat tool list the model actually sees: every browser action plus
+# every excel_* action, as equal peers.
+ACTION_SPECS: dict[str, dict[str, Any]] = {**BROWSER_ACTION_SPECS, **EXCEL_ACTION_SPECS}
 
 _THOUGHT_PROPERTY = {"thought": {"type": "string", "description": "One short sentence: what you see and why."}}
 
@@ -263,19 +289,19 @@ class LLMClient:
         raise LLMError(f"Unknown LLM_PROVIDER: {config.llm_provider}")
 
     def decide_next_action(self, task: str, history: list[str], observation) -> dict[str, Any]:
-        elements_text = "\n".join(
-            f"[{el.index}] <{el.tag}{'/' + el.input_type if el.input_type else ''}> {el.text!r}"
-            for el in observation.elements
-        ) or "(no interactive elements found)"
-
         history_text = "\n".join(f"- {h}" for h in history[-8:]) or "(none yet, this is the first step)"
 
-        user_prompt = f"""TASK: {task}
-
-ACTION HISTORY (most recent last):
-{history_text}
-
-OBSERVATION:
+        if observation is None:
+            # No browser page has been opened yet -- expected for a task
+            # that hasn't needed the browser arm at all, or hasn't gotten
+            # to it yet. Excel-arm results, if any, are already in history.
+            obs_section = "OBSERVATION: No browser page is currently open."
+        else:
+            elements_text = "\n".join(
+                f"[{el.index}] <{el.tag}{'/' + el.input_type if el.input_type else ''}> {el.text!r}"
+                for el in observation.elements
+            ) or "(no interactive elements found)"
+            obs_section = f"""OBSERVATION:
 URL: {observation.url}
 TITLE: {observation.title}
 LOOKS LIKE LOGIN PAGE: {observation.looks_like_login}
@@ -283,7 +309,14 @@ INTERACTIVE ELEMENTS:
 {elements_text}
 
 VISIBLE TEXT (truncated):
-{observation.visible_text}
+{observation.visible_text}"""
+
+        user_prompt = f"""TASK: {task}
+
+ACTION HISTORY (most recent last):
+{history_text}
+
+{obs_section}
 """
         action = self._provider.decide(SYSTEM_PROMPT, user_prompt)
         if "action" not in action:
