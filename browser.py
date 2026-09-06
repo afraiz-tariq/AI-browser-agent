@@ -68,6 +68,7 @@ class ElementInfo:
     role: str
     text: str
     input_type: str = ""
+    state: str = ""  # current .checked (checkbox/radio) or .value (everything else) -- see observe()
 
 
 @dataclass
@@ -77,6 +78,12 @@ class Observation:
     elements: list[ElementInfo]
     visible_text: str
     looks_like_login: bool
+    # Joins every element's `state` together. Exists so the agent loop's
+    # VERIFY step can tell that an action worked even when it only changes
+    # element state (a checkbox toggling, a dropdown's selection) without
+    # changing the URL or any visible text -- which visible_text alone
+    # can't see, since e.g. a checked checkbox usually renders no new text.
+    state_fingerprint: str
 
 
 class BrowserSession:
@@ -190,12 +197,18 @@ class BrowserSession:
                     or ""
                 )
                 label = " ".join(label.split())[:80]  # collapse whitespace, cap length
+                if input_type in ("checkbox", "radio"):
+                    state = "checked" if handle.evaluate("el => el.checked") else "unchecked"
+                elif tag in ("input", "select", "textarea"):
+                    state = str(handle.evaluate("el => el.value") or "")
+                else:
+                    state = ""
             except Exception:
                 continue
 
             idx = len(kept_handles)
             kept_handles.append(handle)
-            elements.append(ElementInfo(index=idx, tag=tag, role=role, text=label, input_type=input_type))
+            elements.append(ElementInfo(index=idx, tag=tag, role=role, text=label, input_type=input_type, state=state))
 
         self._last_elements = kept_handles
 
@@ -208,12 +221,15 @@ class BrowserSession:
         page_signal = (self.page.url + " " + self.page.title() + " " + visible_text[:500]).lower()
         looks_like_login = any(phrase in page_signal for phrase in LOGIN_WALL_PHRASES)
 
+        state_fingerprint = "|".join(f"{el.index}:{el.state}" for el in elements)
+
         return Observation(
             url=self.page.url,
             title=self.page.title(),
             elements=elements,
             visible_text=visible_text,
             looks_like_login=looks_like_login,
+            state_fingerprint=state_fingerprint,
         )
 
     def element_summary(self, index: int) -> str:

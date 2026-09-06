@@ -96,23 +96,26 @@ def verify_action_effect(pending: dict, observation, logger: TaskLogger, history
     We already have everything needed for this without any extra Playwright
     or LLM calls: `pending` was captured right after the action ran (the
     page state just *before* it), and `observation` is the fresh page state
-    from the very next OBSERVE. If neither the URL nor the visible text
-    changed after an action that was expected to change one of them (a
-    navigation, a click, a submitted form), the action probably didn't do
-    what the model thought -- so we say so immediately, in the action's own
-    history entry, rather than silently letting the model discover this
-    itself several steps later (or not at all).
+    from the very next OBSERVE. If none of the URL, the visible text, or
+    any element's state (checked/value -- see browser.py's
+    state_fingerprint) changed after an action that was expected to change
+    one of them (a navigation, a click, a submitted form), the action
+    probably didn't do what the model thought -- so we say so immediately,
+    in the action's own history entry, rather than silently letting the
+    model discover this itself several steps later (or not at all).
 
-    Known limitation, acceptable for Phase 1: this can only see changes
-    that show up in the URL or in visible text. A click that toggles a
-    checkbox's checked state, for example, looks unchanged by this check
-    even though it worked -- we accept that false-negative rather than
-    trying to diff the full DOM, which would add real complexity for a
-    prototype-level signal.
+    Getting this wrong in the "nothing changed" direction is worse than it
+    sounds: a real run showed a false "no observable change" on a checkbox
+    click (which doesn't add visible text) sent the model into a doubt
+    spiral -- re-clicking it repeatedly, second-guessing which of two
+    checkboxes was which, until it burned through the stuck-loop guard.
+    Comparing state_fingerprint alongside the URL/text is what closes that
+    gap for checkboxes, radios, dropdowns, and typed values.
     """
     same_url = observation.url == pending["pre_url"]
     same_text = observation.visible_text == pending["pre_text"]
-    if same_url and same_text:
+    same_state = observation.state_fingerprint == pending["pre_state"]
+    if same_url and same_text and same_state:
         note = f"no observable change after {pending['action']} {pending['args']} -- it may not have worked"
         logger.note(f"VERIFY: {note}")
         print(f"  [verify] (!) {note}")
@@ -290,6 +293,7 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
                 pending_verify = {
                     "action": action, "args": args,
                     "pre_url": observation.url, "pre_text": observation.visible_text,
+                    "pre_state": observation.state_fingerprint,
                 }
         else:
             raise TaskCannotBeCompleted(

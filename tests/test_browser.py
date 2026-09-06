@@ -76,6 +76,31 @@ def test_normal_page_with_nav_login_link_is_not_flagged(test_config, fixtures_se
         session.stop()
 
 
+def test_checkbox_click_changes_state_fingerprint(test_config, fixtures_server):
+    # Regression test: clicking a checkbox must be detectable via
+    # state_fingerprint even though it changes neither the URL nor the
+    # visible text -- this is exactly what the agent loop's VERIFY step
+    # relies on to not mistake a working checkbox click for a failed one.
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/checkbox_page.html")
+        before = session.observe()
+        checkbox_index = next(el.index for el in before.elements if el.input_type == "checkbox")
+        assert before.elements[checkbox_index].state == "unchecked"
+
+        session.click(checkbox_index)
+        after = session.observe()
+
+        assert after.elements[checkbox_index].state == "checked"
+        assert after.state_fingerprint != before.state_fingerprint
+        # And, confirming this is genuinely invisible to the old signal:
+        assert after.url == before.url
+        assert after.visible_text == before.visible_text
+    finally:
+        session.stop()
+
+
 def test_sensitive_action_detection(test_config, fixtures_server):
     session = BrowserSession(test_config)
     session.start()

@@ -54,6 +54,27 @@ def test_declined_sensitive_action_stops_the_task(test_config, fixtures_server, 
     assert "declined" in outcome["result"].lower()
 
 
+def test_verify_step_does_not_false_flag_a_checkbox_click(test_config, fixtures_server, capsys):
+    # Regression test for a real failure: VERIFY used to compare only URL
+    # and visible text, so a successful checkbox click (which changes
+    # neither) looked identical to a failed one -- convincing the model
+    # its own working click had failed, and sending it into a repeated-
+    # clicking spiral until it tripped the stuck-loop guard. Comparing
+    # element state too (see browser.py's state_fingerprint) fixes that.
+    mock = MockProvider([
+        _reply("Navigating to the checkbox page.", "goto", {"url": f"{fixtures_server}/checkbox_page.html"}),
+        _reply("Checking the checkbox.", "click", {"index": 0}),
+        _reply("Done.", "finish", {"summary": "The checkbox was checked."}),
+    ])
+    llm_client = LLMClient(mock)
+
+    outcome = run_task("Check the checkbox.", test_config, dry_run=True, llm_client=llm_client)
+
+    assert outcome["success"] is True
+    captured = capsys.readouterr()
+    assert "[verify]" not in captured.out
+
+
 def test_verify_step_flags_an_action_with_no_observable_effect(test_config, fixtures_server, capsys):
     # The VERIFY step should notice when an action that's supposed to
     # change the page (here, a click) leaves the URL and visible text both

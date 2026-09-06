@@ -44,17 +44,22 @@ Concretely, each step of a task is:
    that look like they submit a form, send something, or delete/purchase
    something first ask you `[y/n]` before running (see **Safety** below).
 4. **Verify** -- once the *next* OBSERVE happens (step 1 again), the agent
-   compares the page's URL and visible text to what they were right before
-   the action ran. If an action that's supposed to change the page (a
-   navigation, a click, a submitted form) left both completely unchanged,
-   that's flagged immediately in the action's own history entry -- e.g.
-   `[VERIFY: no observable change after click ... -- it may not have
-   worked]` -- so the model finds out on its very next decision instead of
-   a human having to notice a stuck task several steps later. This needs no
-   extra API or Playwright calls: it's just comparing two observations the
-   loop already made. (A click that only toggles something like a
-   checkbox's checked state, without changing the URL or visible text, is
-   a known false-negative here -- acceptable for a prototype-level signal.)
+   compares the page's URL, visible text, and every interactive element's
+   state (checked/selected/value -- see `state_fingerprint` in
+   `browser.py`) to what they were right before the action ran. If an
+   action that's supposed to change the page (a navigation, a click, a
+   submitted form) left all of that completely unchanged, that's flagged
+   immediately in the action's own history entry -- e.g. `[VERIFY: no
+   observable change after click ... -- it may not have worked]` -- so the
+   model finds out on its very next decision instead of a human having to
+   notice a stuck task several steps later. This needs no extra API calls
+   (just comparing two observations the loop already made) and only a
+   handful of cheap extra Playwright reads per step. Including element
+   state (not just URL/text) matters in practice: an earlier version only
+   checked URL and visible text, and a checkbox click -- which changes
+   neither -- convinced the model its own successful click had failed,
+   sending it into a repeated-clicking spiral until it tripped the
+   stuck-loop guard below.
 5. Repeat, up to `MAX_STEPS` times, until the model returns `finish` (or
    the agent detects a login wall, a stuck loop, or a hard error).
 
