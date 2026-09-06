@@ -50,6 +50,27 @@ def ask_confirmation(prompt: str) -> bool:
     return answer in ("y", "yes")
 
 
+def offer_manual_resolution(url: str, config, dry_run: bool, logger: TaskLogger) -> bool:
+    """
+    Called whenever a login/CAPTCHA/verification wall is detected -- either
+    by the heuristic in browser.py, or by the model deciding on its own
+    (action == "login_required"). The agent itself never solves it (see
+    README section 3), but if there's a visible Chrome window, a human can
+    solve it right there instead of restarting the whole task. Returns True
+    if the caller should re-observe and continue, False if it should give up.
+    """
+    if config.headless or dry_run:
+        return False
+    print(f"\nThe page at {url} looks like it needs manual action (login, CAPTCHA, or verification).")
+    answer = input(
+        "Resolve it in the Chrome window, then press Enter to continue (or type 'stop' to give up): "
+    ).strip().lower()
+    if answer in ("stop", "quit", "exit", "n"):
+        return False
+    logger.note("User resolved the wall manually; continuing.")
+    return True
+
+
 def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | None = None) -> dict:
     """
     Runs one task end-to-end and returns a result dict. Also writes a log
@@ -93,20 +114,8 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
 
             if observation.looks_like_login and step > 1:
                 logger.note(f"Login/authentication wall detected at {observation.url}")
-                # The agent never solves this itself (login, CAPTCHA, MFA are
-                # all off-limits by design -- see README section 3). But if
-                # there's a visible Chrome window, a human can solve it right
-                # there without restarting the whole task from scratch.
-                if not config.headless and not dry_run:
-                    print(f"\nThe page at {observation.url} looks like it needs manual action "
-                          "(login, CAPTCHA, or verification).")
-                    answer = input(
-                        "Resolve it in the Chrome window, then press Enter to continue "
-                        "(or type 'stop' to give up): "
-                    ).strip().lower()
-                    if answer not in ("stop", "quit", "exit", "n"):
-                        logger.note("User resolved the wall manually; continuing.")
-                        continue
+                if offer_manual_resolution(observation.url, config, dry_run, logger):
+                    continue
                 raise TaskCannotBeCompleted(
                     _explain(
                         f"The page at {observation.url} appears to require login "
@@ -154,6 +163,9 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
                 )
 
             if action == "login_required":
+                logger.note(f"Model reported login_required at {observation.url}: {args.get('reason', '')}")
+                if offer_manual_resolution(observation.url, config, dry_run, logger):
+                    continue
                 raise TaskCannotBeCompleted(
                     _explain(
                         f"Manual login is required at {observation.url}.",
