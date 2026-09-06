@@ -58,9 +58,14 @@ Rules:
 - If the page shows a login form, a "sign in to continue" wall, a CAPTCHA,
   or 2FA/MFA prompt, respond with "login_required" immediately. Never try to
   guess credentials, solve a CAPTCHA, or bypass MFA.
-- When you believe the task is fully done, respond with "finish" and put the
-  complete answer in "summary" -- this is what gets shown to the user and
-  saved to disk, so make it self-contained.
+- "summary" must always contain real content from the page, never a status
+  confirmation. "Search results for X are displayed" or "Task complete" are
+  NOT valid summaries and will be rejected -- read the VISIBLE TEXT in the
+  observation and report the actual information it contains (e.g. the
+  titles/snippets of the top results, the fact(s) found, the data
+  extracted). Even if the task only asked you to perform an action (like
+  "search for X") rather than asking a question, still summarize what the
+  results actually show -- that IS the useful output of the task.
 - Keep "thought" to one short sentence to save tokens.
 """
 

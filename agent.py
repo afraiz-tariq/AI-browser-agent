@@ -86,6 +86,7 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
     history: list[str] = []
     result_summary = None
     error_message = None
+    empty_finish_attempts = 0
 
     try:
         session.start()
@@ -147,11 +148,12 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
 
             # --- stuck-loop / cost guard: bail out if the model repeats
             # the exact same action three times in a row (Phase 1 keeps
-            # this simple rather than trying to be clever about "progress"). ---
-            fingerprint = f"{action}:{json.dumps(args, sort_keys=True)}"
+            # this simple rather than trying to be clever about "progress").
+            # "finish" is excluded here because a repeated empty-summary
+            # finish is a distinct failure mode with its own guard below. ---
             history.append(f"{action} {args} -> thought: {thought}")
             recent = [h.split(" -> thought:")[0] for h in history[-3:]]
-            if len(history) >= 3 and len(set(recent)) == 1:
+            if action != "finish" and len(history) >= 3 and len(set(recent)) == 1:
                 raise TaskCannotBeCompleted(
                     _explain(
                         "The agent repeated the same action three times without progress.",
@@ -178,8 +180,23 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
             if action == "finish":
                 result_summary = (args.get("summary") or "").strip()
                 if not result_summary:
-                    logger.note("Model called finish without a summary; asking it to try again.")
-                    history[-1] += " [REJECTED: finish requires a non-empty summary -- retry with the actual answer]"
+                    empty_finish_attempts += 1
+                    if empty_finish_attempts >= 3:
+                        raise TaskCannotBeCompleted(
+                            _explain(
+                                "The AI model finished the task 3 times without ever writing a summary.",
+                                "It located/completed the requested page action but kept refusing to "
+                                "report what it found, despite being asked to try again each time.",
+                                "Try a more specific task (e.g. name exactly what to extract or report), "
+                                "or try a different LLM_MODEL in .env.",
+                            )
+                        )
+                    logger.note(f"Model called finish without a summary (attempt {empty_finish_attempts}/3); "
+                                "asking it to try again.")
+                    history[-1] += (
+                        " [REJECTED: empty summary. Look at the VISIBLE TEXT above and write 2-3 sentences "
+                        "reporting the actual information/results found there -- not a status confirmation.]"
+                    )
                     continue
                 break
 

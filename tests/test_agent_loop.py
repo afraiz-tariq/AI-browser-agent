@@ -64,6 +64,26 @@ def test_empty_finish_summary_is_rejected_and_retried(test_config, fixtures_serv
     assert outcome["result"] == "The mock search engine loaded successfully."
 
 
+def test_three_empty_finishes_gives_up_with_specific_error(test_config, fixtures_server):
+    # If the model just won't write a summary even after being asked to
+    # retry twice, the task should fail with a dedicated explanation --
+    # and NOT be swallowed by the generic "repeated action" stuck-guard,
+    # which would otherwise fire on three identical finish({}) calls too.
+    empty_finish = _reply("Task complete.", "finish", {})
+    mock = MockProvider([
+        _reply("Navigating.", "goto", {"url": f"{fixtures_server}/index.html"}),
+        empty_finish,
+        empty_finish,
+        empty_finish,
+    ])
+    llm_client = LLMClient(mock)
+
+    outcome = run_task("Open the mock search engine.", test_config, dry_run=True, llm_client=llm_client)
+
+    assert outcome["success"] is False
+    assert "without ever writing a summary" in outcome["result"]
+
+
 def test_repeated_action_is_detected_as_stuck(test_config, fixtures_server):
     same_reply = _reply("Scrolling to see more.", "scroll", {"direction": "down"})
     mock = MockProvider([
