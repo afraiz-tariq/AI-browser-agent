@@ -176,7 +176,11 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
                 )
 
             if action == "finish":
-                result_summary = args.get("summary", "(no summary provided)")
+                result_summary = (args.get("summary") or "").strip()
+                if not result_summary:
+                    logger.note("Model called finish without a summary; asking it to try again.")
+                    history[-1] += " [REJECTED: finish requires a non-empty summary -- retry with the actual answer]"
+                    continue
                 break
 
             if action == "extract":

@@ -47,6 +47,23 @@ def test_login_wall_stops_task_cleanly(test_config, fixtures_server):
     assert "login" in outcome["result"].lower() or "manual" in outcome["result"].lower()
 
 
+def test_empty_finish_summary_is_rejected_and_retried(test_config, fixtures_server):
+    # Regression test: a model that calls finish without actually writing
+    # an answer (args={} or {"summary": ""}) must be asked to try again
+    # instead of the task silently succeeding with "(no summary provided)".
+    mock = MockProvider([
+        _reply("Navigating.", "goto", {"url": f"{fixtures_server}/index.html"}),
+        _reply("Search results are showing, task complete.", "finish", {}),
+        _reply("Here is the actual answer.", "finish", {"summary": "The mock search engine loaded successfully."}),
+    ])
+    llm_client = LLMClient(mock)
+
+    outcome = run_task("Open the mock search engine.", test_config, dry_run=True, llm_client=llm_client)
+
+    assert outcome["success"] is True
+    assert outcome["result"] == "The mock search engine loaded successfully."
+
+
 def test_repeated_action_is_detected_as_stuck(test_config, fixtures_server):
     same_reply = _reply("Scrolling to see more.", "scroll", {"direction": "down"})
     mock = MockProvider([
