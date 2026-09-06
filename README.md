@@ -34,9 +34,12 @@ Concretely, each step of a task is:
    -- using the DOM/accessibility tree, not a screenshot), and a snippet of
    visible text.
 2. **Think** -- `llm.py` sends the task, a short history of what's been
-   tried, and that observation to the configured LLM, and asks for exactly
-   one JSON action back (`goto`, `click`, `type`, `scroll`, `extract`,
-   `finish`, `login_required`, ...).
+   tried, and that observation to the configured LLM, exposing each possible
+   action (`goto`, `click`, `type`, `scroll`, `extract`, `finish`,
+   `login_required`, ...) as a native tool/function call. The model must
+   call exactly one, which is what keeps required fields (like `finish`
+   needing an actual, non-empty answer) enforced by the API itself rather
+   than hoped for from free-text JSON.
 3. **Act** -- `agent.py` executes that action through `browser.py`. Actions
    that look like they submit a form, send something, or delete/purchase
    something first ask you `[y/n]` before running (see **Safety** below).
