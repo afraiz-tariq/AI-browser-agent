@@ -98,8 +98,9 @@ copy .env.example .env
 notepad .env
 ```
 
-At minimum, set `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY` if you set
-`LLM_PROVIDER=anthropic`). Everything else has a sensible default.
+At minimum, set `ANTHROPIC_API_KEY` (the default `LLM_PROVIDER` is
+`anthropic`; set it to `openai` and fill in `OPENAI_API_KEY` instead if
+you'd rather use that). Everything else has a sensible default.
 
 ## Running
 
@@ -154,9 +155,9 @@ When the task finishes, the final answer is printed and saved to
 
 | Variable | Purpose |
 |---|---|
-| `LLM_PROVIDER` | `openai`, `anthropic`, or `mock` (mock is for tests only) |
-| `LLM_MODEL` | Model name for that provider, e.g. `gpt-4o-mini` |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Your API key, never hard-coded |
+| `LLM_PROVIDER` | `anthropic`, `openai`, or `mock` (mock is for tests only) |
+| `LLM_MODEL` | Model name for that provider, e.g. `claude-sonnet-5` |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Your API key, never hard-coded |
 | `MAX_STEPS` | Hard cap on observe/think/act cycles per task (cost control) |
 | `STEP_TIMEOUT_MS` | Playwright timeout per page load/action |
 | `MAX_DOM_CHARS` | How much page text is sent to the LLM per step (cost control) |
@@ -207,8 +208,8 @@ wall, and a task that doesn't finish within `MAX_STEPS`.
 
 ## Troubleshooting
 
-- **`OPENAI_API_KEY is not set`** -- copy `.env.example` to `.env` and add
-  your key.
+- **`ANTHROPIC_API_KEY is not set`** (or `OPENAI_API_KEY`, if you switched
+  providers) -- copy `.env.example` to `.env` and add your key.
 - **Chrome doesn't launch / "executable doesn't exist"** -- make sure
   Google Chrome is installed, or set `CHROME_EXECUTABLE_PATH` in `.env` to
   its `chrome.exe` path, or run `python -m playwright install chromium`
