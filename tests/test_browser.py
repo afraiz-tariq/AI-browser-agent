@@ -47,6 +47,20 @@ def test_login_wall_is_detected(test_config, fixtures_server):
         session.stop()
 
 
+def test_normal_page_with_nav_login_link_is_not_flagged(test_config, fixtures_server):
+    # Regression test: a real login FORM (password field) must be flagged,
+    # but a plain "Log in" nav link -- present on almost every site
+    # (Wikipedia, GitHub, any store, ...) -- must NOT be mistaken for one.
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/normal_page_with_nav_login_link.html")
+        obs = session.observe()
+        assert obs.looks_like_login is False
+    finally:
+        session.stop()
+
+
 def test_sensitive_action_detection(test_config, fixtures_server):
     session = BrowserSession(test_config)
     session.start()

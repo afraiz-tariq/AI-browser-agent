@@ -50,7 +50,10 @@ def ask_confirmation(prompt: str) -> bool:
     return answer in ("y", "yes")
 
 
-def offer_manual_resolution(url: str, config, dry_run: bool, logger: TaskLogger) -> bool:
+MAX_MANUAL_RESOLUTION_OFFERS = 3
+
+
+def offer_manual_resolution(url: str, config, dry_run: bool, logger: TaskLogger, attempt: int) -> bool:
     """
     Called whenever a login/CAPTCHA/verification wall is detected -- either
     by the heuristic in browser.py, or by the model deciding on its own
@@ -58,12 +61,21 @@ def offer_manual_resolution(url: str, config, dry_run: bool, logger: TaskLogger)
     README section 3), but if there's a visible Chrome window, a human can
     solve it right there instead of restarting the whole task. Returns True
     if the caller should re-observe and continue, False if it should give up.
+
+    `attempt` is a 1-based count of how many times this has already been
+    offered for the current task; capped so a misdetected wall (or one the
+    user genuinely can't clear) can't prompt forever instead of failing
+    with a clear error.
     """
     if config.headless or dry_run:
         return False
+    if attempt > MAX_MANUAL_RESOLUTION_OFFERS:
+        logger.note(f"Manual-resolution offer limit ({MAX_MANUAL_RESOLUTION_OFFERS}) reached; giving up.")
+        return False
     print(f"\nThe page at {url} looks like it needs manual action (login, CAPTCHA, or verification).")
     answer = input(
-        "Resolve it in the Chrome window, then press Enter to continue (or type 'stop' to give up): "
+        f"Resolve it in the Chrome window, then press Enter to continue ({attempt}/{MAX_MANUAL_RESOLUTION_OFFERS}, "
+        "or type 'stop' to give up): "
     ).strip().lower()
     if answer in ("stop", "quit", "exit", "n"):
         return False
@@ -87,6 +99,7 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
     result_summary = None
     error_message = None
     empty_finish_attempts = 0
+    wall_offer_attempts = 0
 
     try:
         session.start()
@@ -115,7 +128,8 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
 
             if observation.looks_like_login and step > 1:
                 logger.note(f"Login/authentication wall detected at {observation.url}")
-                if offer_manual_resolution(observation.url, config, dry_run, logger):
+                wall_offer_attempts += 1
+                if offer_manual_resolution(observation.url, config, dry_run, logger, wall_offer_attempts):
                     continue
                 raise TaskCannotBeCompleted(
                     _explain(
@@ -166,7 +180,8 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
 
             if action == "login_required":
                 logger.note(f"Model reported login_required at {observation.url}: {args.get('reason', '')}")
-                if offer_manual_resolution(observation.url, config, dry_run, logger):
+                wall_offer_attempts += 1
+                if offer_manual_resolution(observation.url, config, dry_run, logger, wall_offer_attempts):
                     continue
                 raise TaskCannotBeCompleted(
                     _explain(
