@@ -93,6 +93,20 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
 
             if observation.looks_like_login and step > 1:
                 logger.note(f"Login/authentication wall detected at {observation.url}")
+                # The agent never solves this itself (login, CAPTCHA, MFA are
+                # all off-limits by design -- see README section 3). But if
+                # there's a visible Chrome window, a human can solve it right
+                # there without restarting the whole task from scratch.
+                if not config.headless and not dry_run:
+                    print(f"\nThe page at {observation.url} looks like it needs manual action "
+                          "(login, CAPTCHA, or verification).")
+                    answer = input(
+                        "Resolve it in the Chrome window, then press Enter to continue "
+                        "(or type 'stop' to give up): "
+                    ).strip().lower()
+                    if answer not in ("stop", "quit", "exit", "n"):
+                        logger.note("User resolved the wall manually; continuing.")
+                        continue
                 raise TaskCannotBeCompleted(
                     _explain(
                         f"The page at {observation.url} appears to require login "

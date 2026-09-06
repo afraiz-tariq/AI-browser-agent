@@ -177,6 +177,10 @@ models later -- nothing else in the code references a specific provider.
   or other access controls. If a page looks like a login/verification
   wall, the agent stops and tells you to log in manually (in the same
   persistent Chrome profile it uses, so the login is then remembered).
+  If `HEADLESS=false` (so you can see the Chrome window), it will instead
+  pause and let you resolve the wall yourself right there -- solve the
+  CAPTCHA or log in, then press Enter in the terminal to let the agent
+  continue from where it left off, instead of restarting the whole task.
 - Before any action that looks like it submits a form, sends a
   message, makes a purchase, deletes something, or changes account
   settings, the agent asks:
