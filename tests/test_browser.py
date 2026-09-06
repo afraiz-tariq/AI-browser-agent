@@ -47,6 +47,21 @@ def test_login_wall_is_detected(test_config, fixtures_server):
         session.stop()
 
 
+def test_demo_page_with_password_field_is_not_flagged(test_config, fixtures_server):
+    # Regression test: a bare password-type <input> is not proof of a login
+    # wall on its own -- plenty of public pages have one (registration
+    # forms, "set a new password" forms, input-type demo/test pages like
+    # this fixture) without gating any content behind it.
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/demo_page_with_password_field.html")
+        obs = session.observe()
+        assert obs.looks_like_login is False
+    finally:
+        session.stop()
+
+
 def test_normal_page_with_nav_login_link_is_not_flagged(test_config, fixtures_server):
     # Regression test: a real login FORM (password field) must be flagged,
     # but a plain "Log in" nav link -- present on almost every site

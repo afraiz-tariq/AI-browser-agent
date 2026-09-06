@@ -30,16 +30,22 @@ INTERACTIVE_SELECTOR = (
     "[role=searchbox], [role=textbox], [contenteditable=true]"
 )
 
-# Heuristics used to (a) detect that a page is actively blocking access
-# behind a login/verification wall, and (b) flag actions that are risky
-# enough to require human confirmation.
+# Heuristics used to (a) fast-path-detect that a page is actively blocking
+# access behind a login/verification wall, and (b) flag actions that are
+# risky enough to require human confirmation.
 #
-# Deliberately NOT included here: bare words like "log in" or "password".
-# Almost every website's nav bar has a "Log in" link (Wikipedia, GitHub,
-# any e-commerce site, ...) -- matching on that alone flags nearly every
-# page on the internet as a login wall. Real walls use much more specific
-# phrasing, which is what's matched below. A real login *form* is instead
-# caught precisely, via an actual visible password input field.
+# Deliberately NOT included here: bare words like "log in" or "password",
+# and the mere presence of a password-type <input>. Almost every website's
+# nav bar has a "Log in" link (Wikipedia, GitHub, any e-commerce site, ...),
+# and plenty of legitimate, fully public pages contain a password field
+# without gating anything (registration forms, "set a new password"
+# forms, test/demo pages that showcase input types). Matching on either of
+# those turns this into a false positive on huge swaths of the web. This
+# list is intentionally just a fast, free pre-check for unambiguous wall
+# text; the model itself (see llm.py's SYSTEM_PROMPT) is the real judge of
+# an actual login form from context, the same way it correctly recognized
+# a genuine YC Combinator sign-in page that didn't happen to match any of
+# these phrases.
 LOGIN_WALL_PHRASES = (
     "sign in to continue", "log in to continue", "please sign in to",
     "please log in to", "you must be logged in", "you must sign in",
@@ -200,8 +206,7 @@ class BrowserSession:
         visible_text = " ".join(body_text.split())[:max_chars]
 
         page_signal = (self.page.url + " " + self.page.title() + " " + visible_text[:500]).lower()
-        has_password_field = any(e.input_type == "password" for e in elements)
-        looks_like_login = has_password_field or any(phrase in page_signal for phrase in LOGIN_WALL_PHRASES)
+        looks_like_login = any(phrase in page_signal for phrase in LOGIN_WALL_PHRASES)
 
         return Observation(
             url=self.page.url,
