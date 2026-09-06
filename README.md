@@ -14,7 +14,7 @@ prototype you can actually run today and understand end-to-end.
 User (types a task at the prompt)
         |
         v
-   agent.py            <- the observe/think/act loop lives here
+   agent.py            <- the observe/decide/act/verify loop lives here
         |
         v
      llm.py  <-------------------------+
@@ -33,7 +33,7 @@ Concretely, each step of a task is:
    title, a numbered list of interactive elements (links, buttons, inputs
    -- using the DOM/accessibility tree, not a screenshot), and a snippet of
    visible text.
-2. **Think** -- `llm.py` sends the task, a short history of what's been
+2. **Decide** -- `llm.py` sends the task, a short history of what's been
    tried, and that observation to the configured LLM, exposing each possible
    action (`goto`, `click`, `type`, `scroll`, `extract`, `finish`,
    `login_required`, ...) as a native tool/function call. The model must
@@ -43,7 +43,19 @@ Concretely, each step of a task is:
 3. **Act** -- `agent.py` executes that action through `browser.py`. Actions
    that look like they submit a form, send something, or delete/purchase
    something first ask you `[y/n]` before running (see **Safety** below).
-4. Repeat, up to `MAX_STEPS` times, until the model returns `finish` (or
+4. **Verify** -- once the *next* OBSERVE happens (step 1 again), the agent
+   compares the page's URL and visible text to what they were right before
+   the action ran. If an action that's supposed to change the page (a
+   navigation, a click, a submitted form) left both completely unchanged,
+   that's flagged immediately in the action's own history entry -- e.g.
+   `[VERIFY: no observable change after click ... -- it may not have
+   worked]` -- so the model finds out on its very next decision instead of
+   a human having to notice a stuck task several steps later. This needs no
+   extra API or Playwright calls: it's just comparing two observations the
+   loop already made. (A click that only toggles something like a
+   checkbox's checked state, without changing the URL or visible text, is
+   a known false-negative here -- acceptable for a prototype-level signal.)
+5. Repeat, up to `MAX_STEPS` times, until the model returns `finish` (or
    the agent detects a login wall, a stuck loop, or a hard error).
 
 Every step is written to a per-task log file, and the final answer is also
@@ -58,7 +70,7 @@ mechanics.
 
 ```
 ai_browser_agent/
-├── agent.py          # CLI entry point + the observe/think/act loop
+├── agent.py          # CLI entry point + the observe/decide/act/verify loop
 ├── browser.py         # Playwright wrapper: launch Chrome, observe page, run actions
 ├── llm.py             # Provider-agnostic LLM client (OpenAI / Anthropic / mock)
 ├── logger.py           # Per-task plain-text logging (with secret redaction)
@@ -161,7 +173,7 @@ When the task finishes, the final answer is printed and saved to
 | `LLM_PROVIDER` | `anthropic`, `openai`, or `mock` (mock is for tests only) |
 | `LLM_MODEL` | Model name for that provider, e.g. `claude-sonnet-5` |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Your API key, never hard-coded |
-| `MAX_STEPS` | Hard cap on observe/think/act cycles per task (cost control) |
+| `MAX_STEPS` | Hard cap on observe/decide/act/verify cycles per task (cost control) |
 | `STEP_TIMEOUT_MS` | Playwright timeout per page load/action |
 | `MAX_DOM_CHARS` | How much page text is sent to the LLM per step (cost control) |
 | `HEADLESS` | `false` shows the Chrome window (recommended while learning) |

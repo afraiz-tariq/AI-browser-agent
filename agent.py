@@ -9,13 +9,13 @@ This file is intentionally the only place the *loop* lives -- everything
 else (config, browser control, LLM calls, logging) is a plain module it
 calls into. Read this file top to bottom to understand the whole agent:
 
-    observe the page -> ask the LLM what to do -> do it -> repeat
+    observe the page -> ask the LLM what to do -> do it -> check it worked -> repeat
 
-That loop (an "observe, think, act" cycle, sometimes called ReAct) is the
-same idea every browser-automation agent framework (Browser Use and
-friends included) is built around. Phase 1 implements it directly with
-Playwright instead of pulling in a heavier framework, so every step is
-visible and easy to modify.
+That loop (an "observe, decide, act, verify" cycle, a variant of the
+classic ReAct pattern) is the same idea every browser-automation agent
+framework (Browser Use and friends included) is built around. Phase 1
+implements it directly with Playwright instead of pulling in a heavier
+framework, so every step is visible and easy to modify.
 """
 from __future__ import annotations
 
@@ -35,6 +35,12 @@ from logger import TaskLogger
 # yes first. This is a hard safety net independent of whatever the LLM
 # *thinks* is fine -- see README section 4 ("Safety").
 ALWAYS_CONFIRM_ACTIONS = {"type"}  # confirmed only when submit=True or text targets a sensitive field
+
+# Actions worth VERIFYING after they run -- these are the ones expected to
+# visibly change the page (a new URL, different content, or both). Actions
+# like "scroll" or a plain "type" without submitting don't reliably change
+# either signal, so checking them would just be noise.
+VERIFIABLE_ACTIONS = {"goto", "click", "type", "go_back"}
 
 
 class TaskCannotBeCompleted(Exception):
@@ -83,6 +89,37 @@ def offer_manual_resolution(url: str, config, dry_run: bool, logger: TaskLogger,
     return True
 
 
+def verify_action_effect(pending: dict, observation, logger: TaskLogger, history: list[str]) -> None:
+    """
+    The explicit VERIFY step of the observe -> decide -> act -> verify loop.
+
+    We already have everything needed for this without any extra Playwright
+    or LLM calls: `pending` was captured right after the action ran (the
+    page state just *before* it), and `observation` is the fresh page state
+    from the very next OBSERVE. If neither the URL nor the visible text
+    changed after an action that was expected to change one of them (a
+    navigation, a click, a submitted form), the action probably didn't do
+    what the model thought -- so we say so immediately, in the action's own
+    history entry, rather than silently letting the model discover this
+    itself several steps later (or not at all).
+
+    Known limitation, acceptable for Phase 1: this can only see changes
+    that show up in the URL or in visible text. A click that toggles a
+    checkbox's checked state, for example, looks unchanged by this check
+    even though it worked -- we accept that false-negative rather than
+    trying to diff the full DOM, which would add real complexity for a
+    prototype-level signal.
+    """
+    same_url = observation.url == pending["pre_url"]
+    same_text = observation.visible_text == pending["pre_text"]
+    if same_url and same_text:
+        note = f"no observable change after {pending['action']} {pending['args']} -- it may not have worked"
+        logger.note(f"VERIFY: {note}")
+        print(f"  [verify] (!) {note}")
+        if history:
+            history[-1] += f" [VERIFY: {note}]"
+
+
 def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | None = None) -> dict:
     """
     Runs one task end-to-end and returns a result dict. Also writes a log
@@ -100,6 +137,7 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
     error_message = None
     empty_finish_attempts = 0
     wall_offer_attempts = 0
+    pending_verify: dict | None = None
 
     try:
         session.start()
@@ -125,6 +163,13 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
                         "Try increasing STEP_TIMEOUT_MS in .env, or simplify the task.",
                     )
                 ) from e
+
+            # --- VERIFY: check the effect of the PREVIOUS step's action,
+            # now that this fresh OBSERVE has happened, before deciding
+            # anything new. See verify_action_effect()'s docstring. ---
+            if pending_verify is not None:
+                verify_action_effect(pending_verify, observation, logger, history)
+                pending_verify = None
 
             if observation.looks_like_login and step > 1:
                 logger.note(f"Login/authentication wall detected at {observation.url}")
@@ -225,10 +270,27 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
                 logger.error(str(e))
                 history[-1] += " [FAILED: invalid element index]"
                 continue
+            except TaskCannotBeCompleted:
+                # A declined sensitive-action confirmation raises this from
+                # inside _execute_action -- it must stop the task (see
+                # README section 4), not be swallowed as a generic
+                # per-action failure by the broader except below.
+                raise
             except Exception as e:
                 logger.error(f"Action '{action}' failed: {e}")
                 history[-1] += f" [FAILED: {e}]"
                 continue
+
+            # ACT succeeded without raising -- schedule the VERIFY check for
+            # the top of the next loop iteration, once we have a fresh
+            # OBSERVE to compare against. A plain "type" that isn't
+            # submitting anything isn't expected to change the URL or page
+            # text, so it's excluded to avoid false alarms.
+            if action in VERIFIABLE_ACTIONS and (action != "type" or args.get("submit")):
+                pending_verify = {
+                    "action": action, "args": args,
+                    "pre_url": observation.url, "pre_text": observation.visible_text,
+                }
         else:
             raise TaskCannotBeCompleted(
                 _explain(
