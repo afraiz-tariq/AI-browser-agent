@@ -1,0 +1,18 @@
+# Local secrets -- never commit your real .env file.
+.env
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Runtime data -- keep the folders in git, ignore their contents.
+logs/*.log
+output/*.json
+!logs/.gitkeep
+!output/.gitkeep
+
+# Persistent Chrome profile (cookies, local login state -- never commit this)
+chrome_profile/
