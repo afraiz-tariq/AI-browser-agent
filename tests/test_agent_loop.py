@@ -6,6 +6,7 @@ llm.py, and agent.py works without spending API credits or needing
 internet access to a real search engine.
 """
 import json
+from unittest.mock import MagicMock
 
 from agent import run_task
 from llm import LLMClient, MockProvider
@@ -50,6 +51,45 @@ def test_declined_sensitive_action_stops_the_task(test_config, fixtures_server, 
     # confirmation prompts entirely, which would defeat this test.
     outcome = run_task("Delete the account.", test_config, dry_run=False, llm_client=llm_client)
 
+    assert outcome["success"] is False
+    assert "declined" in outcome["result"].lower()
+
+
+def test_custom_confirm_callback_is_used_and_can_approve(test_config, fixtures_server):
+    # Regression test for the Discord bot (and any other non-terminal
+    # front-end): run_task() must use an injected confirm_callback instead
+    # of the default ask_confirmation()/input() when one is provided --
+    # that's what lets a bot ask y/n in a chat instead of blocking on a
+    # terminal that isn't attached.
+    confirm = MagicMock(return_value=True)
+    mock = MockProvider([
+        _reply("Navigating to the account settings page.", "goto", {"url": f"{fixtures_server}/sensitive_button.html"}),
+        _reply("Deleting the account.", "click", {"index": 0}),
+        _reply("Done.", "finish", {"summary": "The account was deleted."}),
+    ])
+    llm_client = LLMClient(mock)
+
+    outcome = run_task(
+        "Delete the account.", test_config, dry_run=False, llm_client=llm_client, confirm_callback=confirm,
+    )
+
+    assert confirm.called
+    assert outcome["success"] is True
+
+
+def test_custom_confirm_callback_can_decline(test_config, fixtures_server):
+    confirm = MagicMock(return_value=False)
+    mock = MockProvider([
+        _reply("Navigating to the account settings page.", "goto", {"url": f"{fixtures_server}/sensitive_button.html"}),
+        _reply("Deleting the account.", "click", {"index": 0}),
+    ])
+    llm_client = LLMClient(mock)
+
+    outcome = run_task(
+        "Delete the account.", test_config, dry_run=False, llm_client=llm_client, confirm_callback=confirm,
+    )
+
+    assert confirm.called
     assert outcome["success"] is False
     assert "declined" in outcome["result"].lower()
 

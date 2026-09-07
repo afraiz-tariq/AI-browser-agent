@@ -64,6 +64,10 @@ class Config:
     # --- Safety ---
     confirm_sensitive_actions: bool = field(default_factory=lambda: _bool("CONFIRM_SENSITIVE_ACTIONS", True))
 
+    # --- Discord bot interface (discord_bot.py) ---
+    discord_bot_token: str = field(default_factory=lambda: os.getenv("DISCORD_BOT_TOKEN", ""))
+    discord_allowed_user_id: int = field(default_factory=lambda: _int("DISCORD_ALLOWED_USER_ID", 0))
+
     def validate(self) -> list[str]:
         """Return a list of human-readable problems, empty if config is OK."""
         problems = []

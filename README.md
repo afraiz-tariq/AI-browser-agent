@@ -8,8 +8,8 @@ is done.
 **Status:** Phase 1 (the browser arm) is complete and has been validated
 with real end-to-end runs -- search, multi-page research, form-filling with
 the safety confirmation firing correctly. Phase 2 is in progress: the Excel
-arm above is its first piece. Windows desktop automation and a phone/LAN
-command interface are designed but not yet built (see **Phase 2 design**
+arm and a Discord bot interface (`discord_bot.py`) are both built. Windows
+desktop automation is designed but not yet built (see **Phase 2 design**
 below).
 
 ## Architecture
@@ -120,17 +120,26 @@ The plan discussed for extending this beyond the browser:
   for a short allowlist), not the browser arm's opt-in keyword-matching --
   a Windows arm's blast radius (other apps' data, system dialogs) is
   bigger than a browser tab's.
-- **Phone/LAN command interface, later still.** A local HTTP endpoint
-  `agent.py` listens on, so a phone on the same Wi-Fi can submit a task
-  and get the result back. No cloud exposure -- but even LAN-only should
-  have a minimal shared-secret check, since "same Wi-Fi" still means any
-  other device on it could otherwise hit the endpoint.
+- **Remote command interface** (implemented, see below) -- but as a
+  **Discord bot** (`discord_bot.py`), not the local HTTP/LAN server
+  originally sketched here. The bot makes an outbound connection to
+  Discord, so there's nothing exposed on this PC at all (no port
+  forwarding, no firewall rules, no VPN), and it works from anywhere with
+  the Discord app and internet, not just the same Wi-Fi. It also lets
+  sensitive-action confirmations be genuinely interactive -- the bot asks
+  `y/n` in the chat and waits for a reply -- rather than an HTTP request's
+  only realistic option of auto-declining every sensitive action outright.
+  Getting there required making `run_task()`'s `[y/n]` confirmation
+  mechanism pluggable (a `confirm_callback` parameter, defaulting to the
+  original terminal `input()` prompt) instead of hard-coded, so a non-
+  terminal front-end can ask its own way -- see `agent.py`.
 
 ## Project structure
 
 ```
 ai_browser_agent/
 ├── agent.py          # CLI entry point + the observe/decide/act/verify loop
+├── discord_bot.py     # Discord bot interface: calls run_task() with a chat-based confirm_callback
 ├── browser.py         # Browser arm: Playwright wrapper (launch Chrome, observe page, run actions)
 ├── excel_tools.py      # Excel arm: openpyxl wrapper (open/read/write/save .xlsx files)
 ├── llm.py             # Provider-agnostic LLM client (OpenAI / Anthropic / mock); merges both arms' tools
@@ -244,6 +253,66 @@ Mixed (both arms in one task):
    orchestrator can move between arms within a single task and that data
    read from one arm can be used in an action on the other.
 
+## Discord bot interface
+
+`discord_bot.py` lets you DM the agent a task from your phone (or any
+device with Discord) from anywhere -- not just the same Wi-Fi -- since the
+bot makes an outbound connection to Discord; nothing on this PC listens for
+inbound connections, so there's no port forwarding, firewall rule, or VPN
+to set up.
+
+**One-time setup** (you do this part, not the agent):
+
+1. Go to <https://discord.com/developers/applications> → **New
+   Application** → give it a name.
+2. **Bot** tab → Reset/copy the **bot token** → put it in `.env` as
+   `DISCORD_BOT_TOKEN`. Never commit this.
+3. Same **Bot** tab → enable the **"Message Content Intent"** toggle. Easy
+   to miss, and the bot silently can't read any message text without it.
+4. Either invite the bot to a server you're in (**OAuth2** tab → URL
+   Generator → scope `bot` → permissions `Send Messages` +
+   `Read Message History` → open the generated URL), or skip that and just
+   DM the bot directly once you know its user ID -- simpler and more
+   private, no server needed.
+5. Get your own Discord user ID (Discord app → **Settings** → **Advanced**
+   → enable **Developer Mode**, then right-click your own name → **Copy
+   User ID**) → put it in `.env` as `DISCORD_ALLOWED_USER_ID`. The bot only
+   ever acts on messages from this exact user; everyone else is silently
+   ignored.
+
+**Running:**
+
+```
+python discord_bot.py
+```
+
+This is a separate long-running process from `python agent.py`, which is
+unchanged and still the terminal entry point.
+
+DM the bot a task the same way you'd type it at the `python agent.py`
+prompt. It replies with an immediate `🤖 Running: <task>` acknowledgment,
+then the final result (or a `WHAT HAPPENED` / `WHY` / `WHAT YOU CAN DO`
+failure explanation) once it's done -- these can take 30-90+ seconds since
+it's driving real Chrome/Excel automation underneath.
+
+If a task hits a sensitive-action confirmation, the bot asks right in the
+chat:
+
+```
+Ready to click <button 'Submit'>. This looks like it may have side effects. Continue?
+Reply y to continue or n to decline (auto-declines in 5 minutes).
+```
+
+Reply `y` or `n`. Anything else, or no reply within 5 minutes, is treated
+as a decline -- the same fail-closed default as an explicit `n`, never a
+silent auto-approve.
+
+Bot-triggered tasks always run with Chrome headless (nobody's watching this
+PC's screen remotely), and only one task runs at a time -- send a second
+one while the first is still going and the bot replies "Still working on
+the previous task" instead of racing two Chrome/Excel sessions against
+each other.
+
 ## Configuration (`.env`)
 
 | Variable | Purpose |
@@ -260,6 +329,8 @@ Mixed (both arms in one task):
 | `CHROME_USER_DATA_DIR` | Persistent profile folder, so manual logins carry over between runs |
 | `USE_PERSISTENT_PROFILE` | `true` keeps cookies/logins between runs |
 | `CONFIRM_SENSITIVE_ACTIONS` | `true` asks `[y/n]` before risky actions |
+| `DISCORD_BOT_TOKEN` | Bot token for `discord_bot.py`; it refuses to start without one |
+| `DISCORD_ALLOWED_USER_ID` | Your Discord user ID; `discord_bot.py` ignores everyone else |
 
 Changing `LLM_PROVIDER`/`LLM_MODEL` is the only thing needed to switch
 models later -- nothing else in the code references a specific provider.
@@ -290,6 +361,10 @@ models later -- nothing else in the code references a specific provider.
 - No password, API key, cookie, or session token is ever written to a log
   file (`logger.py` also redacts anything that looks like a secret as a
   defense in depth).
+- The Discord bot only ever obeys `DISCORD_ALLOWED_USER_ID`; every other
+  message is silently ignored. Sensitive-action confirmations still fire
+  over Discord chat (see **Discord bot interface** above) -- a `[y/n]`
+  question is never skipped just because the request came in remotely.
 
 ## Cost awareness
 

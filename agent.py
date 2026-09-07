@@ -25,6 +25,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from browser import BrowserSession
 from config import OUTPUT_DIR, load_config
@@ -60,6 +61,12 @@ def _explain(problem: str, likely_cause: str, suggestion: str) -> str:
 
 
 def ask_confirmation(prompt: str) -> bool:
+    """
+    The default confirm_callback for run_task(): a terminal [y/n] prompt.
+    Any other front-end (e.g. discord_bot.py) passes its own callable with
+    this same str -> bool shape instead -- see run_task()'s confirm_callback
+    parameter.
+    """
     answer = input(f"{prompt} [y/n]: ").strip().lower()
     return answer in ("y", "yes")
 
@@ -152,16 +159,27 @@ def _ensure_browser_started(session: BrowserSession) -> None:
         ) from e
 
 
-def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | None = None) -> dict:
+def run_task(
+    task: str, config, dry_run: bool = False, llm_client: LLMClient | None = None,
+    confirm_callback: Callable[[str], bool] | None = None,
+) -> dict:
     """
     Runs one task end-to-end and returns a result dict. Also writes a log
     file to logs/ and, on success, a result file to output/.
 
     `llm_client` can be injected directly (used by the test suite to pass a
     MockProvider); normally it's built from `config`.
+
+    `confirm_callback` is how a sensitive-action [y/n] confirmation is
+    asked. Defaults to ask_confirmation() (a terminal prompt via input()) so
+    `python agent.py` behaves exactly as before. A different front-end
+    (discord_bot.py) passes its own str -> bool callable instead -- e.g. one
+    that posts the question into a chat and blocks for a reply there,
+    rather than blocking on a terminal that isn't attached.
     """
     logger = TaskLogger(Path(__file__).parent / "logs", task)
     llm = llm_client or LLMClient.from_config(config)
+    confirm = confirm_callback or ask_confirmation
     session = BrowserSession(config)  # Chrome itself isn't launched until first use -- see _ensure_browser_started
     excel_session = ExcelSession()
 
@@ -296,7 +314,7 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
                 continue
 
             try:
-                result_text = _execute_action(session, excel_session, action, args, config, dry_run)
+                result_text = _execute_action(session, excel_session, action, args, config, dry_run, confirm)
             except IndexError as e:
                 logger.error(str(e))
                 history[-1] += " [FAILED: invalid element index]"
@@ -363,7 +381,8 @@ def run_task(task: str, config, dry_run: bool = False, llm_client: LLMClient | N
 
 
 def _execute_action(
-    session: BrowserSession, excel_session: ExcelSession, action: str, args: dict, config, dry_run: bool
+    session: BrowserSession, excel_session: ExcelSession, action: str, args: dict, config, dry_run: bool,
+    confirm: Callable[[str], bool],
 ) -> str | None:
     """
     Dispatches one action to whichever arm owns it. Browser actions return
@@ -371,11 +390,16 @@ def _execute_action(
     excel_* actions return a short result string that the caller puts
     straight into the action's own history entry, since there's no
     equivalent "observe the whole environment" step for a spreadsheet.
+
+    `confirm` is run_task()'s resolved confirm_callback (ask_confirmation by
+    default, or whatever the caller passed in) -- every [y/n] gate below
+    goes through it instead of calling ask_confirmation()/input() directly,
+    so a non-terminal front-end can ask its own way.
     """
     if action.startswith("excel_"):
         if action in ALWAYS_CONFIRM_EXCEL_ACTIONS and config.confirm_sensitive_actions and not dry_run:
             target = args.get("path") or excel_session.path or "(current file)"
-            if not ask_confirmation(f"Ready to save the workbook to '{target}', overwriting it. Continue?"):
+            if not confirm(f"Ready to save the workbook to '{target}', overwriting it. Continue?"):
                 raise TaskCannotBeCompleted(
                     _explain(
                         "User declined a sensitive action.",
@@ -396,7 +420,7 @@ def _execute_action(
         index = int(args["index"])
         if config.confirm_sensitive_actions and session.is_sensitive(index) and not dry_run:
             desc = session.element_summary(index)
-            if not ask_confirmation(f"Ready to click {desc}. This looks like it may have side effects. Continue?"):
+            if not confirm(f"Ready to click {desc}. This looks like it may have side effects. Continue?"):
                 raise TaskCannotBeCompleted(
                     _explain(
                         "User declined a sensitive action.",
@@ -412,7 +436,7 @@ def _execute_action(
         submit = bool(args.get("submit", False))
         if config.confirm_sensitive_actions and submit and not dry_run:
             desc = session.element_summary(index)
-            if not ask_confirmation(f"Ready to type into {desc} and submit. Continue?"):
+            if not confirm(f"Ready to type into {desc} and submit. Continue?"):
                 raise TaskCannotBeCompleted(
                     _explain(
                         "User declined a sensitive action.",
