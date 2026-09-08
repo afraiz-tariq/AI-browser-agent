@@ -27,37 +27,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from browser import BrowserSession
+from browser import BrowserSession, BrowserToolProvider
 from config import OUTPUT_DIR, load_config
-from excel_tools import ExcelSession
+from errors import TaskCannotBeCompleted, explain
+from excel_tools import ExcelSession, ExcelToolProvider
 from llm import LLMClient, LLMError
 from logger import TaskLogger
-
-# Actions the agent must never perform without the user explicitly saying
-# yes first. This is a hard safety net independent of whatever the LLM
-# *thinks* is fine -- see README section 4 ("Safety").
-ALWAYS_CONFIRM_ACTIONS = {"type"}  # confirmed only when submit=True or text targets a sensitive field
-
-# Excel actions that touch disk always confirm, the same way a sensitive
-# browser click does -- reading/writing the in-memory workbook is cheap to
-# undo (just don't save), but excel_save overwrites a real file.
-ALWAYS_CONFIRM_EXCEL_ACTIONS = {"excel_save"}
-
-# Actions worth VERIFYING after they run -- these are the ones expected to
-# visibly change the page (a new URL, different content, or both). Actions
-# like "scroll" or a plain "type" without submitting don't reliably change
-# either signal, so checking them would just be noise. Excel actions aren't
-# here: they're deterministic and report their own result directly (see
-# _execute_action), so there's nothing ambiguous for VERIFY to catch.
-VERIFIABLE_ACTIONS = {"goto", "click", "type", "go_back"}
-
-
-class TaskCannotBeCompleted(Exception):
-    """Raised to stop the loop early with a clear, user-facing explanation."""
-
-
-def _explain(problem: str, likely_cause: str, suggestion: str) -> str:
-    return f"WHAT HAPPENED: {problem}\nWHY: {likely_cause}\nWHAT YOU CAN DO: {suggestion}"
+from tool_provider import ToolProvider, ToolSpec, requires_confirmation
 
 
 def ask_confirmation(prompt: str) -> bool:
@@ -104,61 +80,6 @@ def offer_manual_resolution(url: str, config, dry_run: bool, logger: TaskLogger,
     return True
 
 
-def verify_action_effect(pending: dict, observation, logger: TaskLogger, history: list[str]) -> None:
-    """
-    The explicit VERIFY step of the observe -> decide -> act -> verify loop.
-
-    We already have everything needed for this without any extra Playwright
-    or LLM calls: `pending` was captured right after the action ran (the
-    page state just *before* it), and `observation` is the fresh page state
-    from the very next OBSERVE. If none of the URL, the visible text, or
-    any element's state (checked/value -- see browser.py's
-    state_fingerprint) changed after an action that was expected to change
-    one of them (a navigation, a click, a submitted form), the action
-    probably didn't do what the model thought -- so we say so immediately,
-    in the action's own history entry, rather than silently letting the
-    model discover this itself several steps later (or not at all).
-
-    Getting this wrong in the "nothing changed" direction is worse than it
-    sounds: a real run showed a false "no observable change" on a checkbox
-    click (which doesn't add visible text) sent the model into a doubt
-    spiral -- re-clicking it repeatedly, second-guessing which of two
-    checkboxes was which, until it burned through the stuck-loop guard.
-    Comparing state_fingerprint alongside the URL/text is what closes that
-    gap for checkboxes, radios, dropdowns, and typed values.
-    """
-    same_url = observation.url == pending["pre_url"]
-    same_text = observation.visible_text == pending["pre_text"]
-    same_state = observation.state_fingerprint == pending["pre_state"]
-    if same_url and same_text and same_state:
-        note = f"no observable change after {pending['action']} {pending['args']} -- it may not have worked"
-        logger.note(f"VERIFY: {note}")
-        print(f"  [verify] (!) {note}")
-        if history:
-            history[-1] += f" [VERIFY: {note}]"
-
-
-def _ensure_browser_started(session: BrowserSession) -> None:
-    """
-    Launches Chrome on first use rather than unconditionally at task start.
-    A task that only ever calls excel_* actions should never touch Chrome
-    at all -- launching it anyway would be a pointless dependency and a
-    slow, pointless window popping up for no reason.
-    """
-    if session.page is not None:
-        return
-    try:
-        session.start()
-    except Exception as e:
-        raise TaskCannotBeCompleted(
-            _explain(
-                "Chrome could not be launched.",
-                "Google Chrome may not be installed, or Playwright cannot find it.",
-                "Install Chrome, then run 'python -m playwright install chrome' and try again.",
-            )
-        ) from e
-
-
 def run_task(
     task: str, config, dry_run: bool = False, llm_client: LLMClient | None = None,
     confirm_callback: Callable[[str], bool] | None = None,
@@ -178,10 +99,26 @@ def run_task(
     rather than blocking on a terminal that isn't attached.
     """
     logger = TaskLogger(Path(__file__).parent / "logs", task)
-    llm = llm_client or LLMClient.from_config(config)
     confirm = confirm_callback or ask_confirmation
-    session = BrowserSession(config)  # Chrome itself isn't launched until first use -- see _ensure_browser_started
+    session = BrowserSession(config)  # Chrome itself isn't launched until first use -- see BrowserToolProvider.ensure_ready
     excel_session = ExcelSession()
+
+    # One ToolProvider per arm, registered by tool name -- this is the
+    # registry that replaces the old string-prefix dispatch (`if
+    # action.startswith("excel_")`). Adding a third arm (MCP, eventually)
+    # means adding one more provider here; nothing else in this loop needs
+    # to change. See tool_provider.py.
+    providers: list[ToolProvider] = [BrowserToolProvider(session), ExcelToolProvider(excel_session)]
+    tool_specs: list[ToolSpec] = []
+    tool_owner: dict[str, ToolProvider] = {}
+    tool_spec_by_name: dict[str, ToolSpec] = {}
+    for provider in providers:
+        for spec in provider.get_tool_specs():
+            tool_specs.append(spec)
+            tool_owner[spec.name] = provider
+            tool_spec_by_name[spec.name] = spec
+
+    llm = llm_client or LLMClient.from_config(config, tool_specs)
 
     history: list[str] = []
     result_summary = None
@@ -205,7 +142,7 @@ def run_task(
                     observation = session.observe(max_chars=config.max_dom_chars)
                 except Exception as e:
                     raise TaskCannotBeCompleted(
-                        _explain(
+                        explain(
                             f"Could not read the current page ({session.page.url}).",
                             "The page may still be loading, or it uses an unusual structure Playwright can't parse.",
                             "Try increasing STEP_TIMEOUT_MS in .env, or simplify the task.",
@@ -214,9 +151,17 @@ def run_task(
 
             # --- VERIFY: check the effect of the PREVIOUS step's action,
             # now that this fresh OBSERVE has happened, before deciding
-            # anything new. See verify_action_effect()'s docstring. ---
+            # anything new. Delegated to the owning provider's verify() --
+            # see BrowserToolProvider.verify() in browser.py. ---
             if pending_verify is not None and observation is not None:
-                verify_action_effect(pending_verify, observation, logger, history)
+                warning = pending_verify["provider"].verify(
+                    pending_verify["action"], pending_verify["args"], pending_verify["pre_state"], observation
+                )
+                if warning:
+                    logger.note(f"VERIFY: {warning}")
+                    print(f"  [verify] (!) {warning}")
+                    if history:
+                        history[-1] += f" [VERIFY: {warning}]"
                 pending_verify = None
 
             if observation is not None and observation.looks_like_login and step > 1:
@@ -225,7 +170,7 @@ def run_task(
                 if offer_manual_resolution(observation.url, config, dry_run, logger, wall_offer_attempts):
                     continue
                 raise TaskCannotBeCompleted(
-                    _explain(
+                    explain(
                         f"The page at {observation.url} appears to require login "
                         "(or shows a CAPTCHA/verification prompt).",
                         "This site needs authentication that Phase 1 does not attempt to bypass "
@@ -239,7 +184,7 @@ def run_task(
                 decision = llm.decide_next_action(task, history, observation)
             except LLMError as e:
                 raise TaskCannotBeCompleted(
-                    _explain(
+                    explain(
                         "The AI model could not be reached or gave an unusable reply.",
                         str(e),
                         "Check your API key and LLM_PROVIDER/LLM_MODEL in .env, and your internet connection.",
@@ -263,7 +208,7 @@ def run_task(
             recent = [h.split(" -> thought:")[0] for h in history[-3:]]
             if action != "finish" and len(history) >= 3 and len(set(recent)) == 1:
                 raise TaskCannotBeCompleted(
-                    _explain(
+                    explain(
                         "The agent repeated the same action three times without progress.",
                         "The AI model may be stuck (e.g. the page didn't change as expected, "
                         "or the element index it picked doesn't do what it thinks).",
@@ -278,7 +223,7 @@ def run_task(
                 if offer_manual_resolution(current_url, config, dry_run, logger, wall_offer_attempts):
                     continue
                 raise TaskCannotBeCompleted(
-                    _explain(
+                    explain(
                         f"Manual login is required at {current_url}.",
                         args.get("reason", "The model detected an authentication requirement."),
                         f"Log in manually in the Chrome profile this agent uses "
@@ -292,7 +237,7 @@ def run_task(
                     empty_finish_attempts += 1
                     if empty_finish_attempts >= 3:
                         raise TaskCannotBeCompleted(
-                            _explain(
+                            explain(
                                 "The AI model finished the task 3 times without ever writing a summary.",
                                 "It located/completed the requested page action but kept refusing to "
                                 "report what it found, despite being asked to try again each time.",
@@ -314,14 +259,16 @@ def run_task(
                 continue
 
             try:
-                result_text = _execute_action(session, excel_session, action, args, config, dry_run, confirm)
+                result_text = _dispatch_action(
+                    tool_owner, tool_spec_by_name, action, args, config, dry_run, confirm
+                )
             except IndexError as e:
                 logger.error(str(e))
                 history[-1] += " [FAILED: invalid element index]"
                 continue
             except TaskCannotBeCompleted:
                 # A declined sensitive-action confirmation raises this from
-                # inside _execute_action -- it must stop the task (see
+                # inside _dispatch_action -- it must stop the task (see
                 # README section 4), not be swallowed as a generic
                 # per-action failure by the broader except below.
                 raise
@@ -342,21 +289,23 @@ def run_task(
 
             # ACT succeeded without raising -- schedule the VERIFY check for
             # the top of the next loop iteration, once we have a fresh
-            # OBSERVE to compare against. A plain "type" that isn't
-            # submitting anything isn't expected to change the URL or page
-            # text, so it's excluded to avoid false alarms. Excel actions
-            # are never in VERIFIABLE_ACTIONS. And there's nothing to
-            # compare against yet if this was the very first browser action
-            # (observation was None going into this step).
-            if observation is not None and action in VERIFIABLE_ACTIONS and (action != "type" or args.get("submit")):
+            # OBSERVE to compare against. Delegated to the owning provider's
+            # wants_verification() (see BrowserToolProvider.wants_verification
+            # -- excel actions never opt in, they're deterministic and
+            # self-reporting). Nothing to compare against yet if this was
+            # the very first browser action (observation was None going
+            # into this step).
+            if observation is not None and tool_owner[action].wants_verification(action, args):
                 pending_verify = {
-                    "action": action, "args": args,
-                    "pre_url": observation.url, "pre_text": observation.visible_text,
-                    "pre_state": observation.state_fingerprint,
+                    "provider": tool_owner[action], "action": action, "args": args,
+                    "pre_state": {
+                        "url": observation.url, "text": observation.visible_text,
+                        "state": observation.state_fingerprint,
+                    },
                 }
         else:
             raise TaskCannotBeCompleted(
-                _explain(
+                explain(
                     f"The task did not finish within MAX_STEPS ({config.max_steps}).",
                     "The task may be more complex than the step budget allows, "
                     "or the agent took inefficient actions.",
@@ -380,79 +329,51 @@ def run_task(
     return {"success": True, "result": result_summary, "output_path": str(output_path)}
 
 
-def _execute_action(
-    session: BrowserSession, excel_session: ExcelSession, action: str, args: dict, config, dry_run: bool,
-    confirm: Callable[[str], bool],
+def _dispatch_action(
+    tool_owner: dict[str, ToolProvider], tool_spec_by_name: dict[str, ToolSpec], action: str, args: dict,
+    config, dry_run: bool, confirm: Callable[[str], bool],
 ) -> str | None:
     """
-    Dispatches one action to whichever arm owns it. Browser actions return
-    None (their effect is picked up by the next OBSERVE + VERIFY instead);
-    excel_* actions return a short result string that the caller puts
-    straight into the action's own history entry, since there's no
-    equivalent "observe the whole environment" step for a spreadsheet.
+    Dispatches one action to whichever ToolProvider owns it -- the generic
+    replacement for the old per-arm hardcoded dispatch (`if
+    action.startswith("excel_")` plus separate confirmation logic per
+    browser action). Works the same for any current or future arm without
+    this function needing to know which one `action` belongs to; see
+    tool_provider.py for the ToolProvider contract.
+
+    Browser actions return None (their effect is picked up by the next
+    OBSERVE + VERIFY instead); excel_* actions return a short result string
+    that the caller puts straight into the action's own history entry,
+    since there's no equivalent "observe the whole environment" step for a
+    spreadsheet.
 
     `confirm` is run_task()'s resolved confirm_callback (ask_confirmation by
-    default, or whatever the caller passed in) -- every [y/n] gate below
+    default, or whatever the caller passed in) -- the one [y/n] gate below
     goes through it instead of calling ask_confirmation()/input() directly,
     so a non-terminal front-end can ask its own way.
     """
-    if action.startswith("excel_"):
-        if action in ALWAYS_CONFIRM_EXCEL_ACTIONS and config.confirm_sensitive_actions and not dry_run:
-            target = args.get("path") or excel_session.path or "(current file)"
-            if not confirm(f"Ready to save the workbook to '{target}', overwriting it. Continue?"):
-                raise TaskCannotBeCompleted(
-                    _explain(
-                        "User declined a sensitive action.",
-                        f"Saving (overwriting) '{target}' was flagged for confirmation and declined.",
-                        "Re-run the task and confirm if saving was actually intended.",
-                    )
-                )
-        return excel_session.execute(action, args)
-
-    if action == "goto":
-        # The only browser action that can legitimately be the very first
-        # one in a task -- everything else (click, type, scroll, ...)
-        # operates on an element index that can only have come from an
-        # OBSERVATION, which means goto (or an earlier one) already ran.
-        _ensure_browser_started(session)
-        session.goto(args["url"])
-    elif action == "click":
-        index = int(args["index"])
-        if config.confirm_sensitive_actions and session.is_sensitive(index) and not dry_run:
-            desc = session.element_summary(index)
-            if not confirm(f"Ready to click {desc}. This looks like it may have side effects. Continue?"):
-                raise TaskCannotBeCompleted(
-                    _explain(
-                        "User declined a sensitive action.",
-                        f"Clicking {desc} was flagged as potentially irreversible "
-                        "(form submission, purchase, delete, etc.).",
-                        "Re-run the task and confirm the action if it was actually intended.",
-                    )
-                )
-        session.click(index)
-    elif action == "type":
-        index = int(args["index"])
-        text = str(args.get("text", ""))
-        submit = bool(args.get("submit", False))
-        if config.confirm_sensitive_actions and submit and not dry_run:
-            desc = session.element_summary(index)
-            if not confirm(f"Ready to type into {desc} and submit. Continue?"):
-                raise TaskCannotBeCompleted(
-                    _explain(
-                        "User declined a sensitive action.",
-                        "Submitting a form was flagged for confirmation and declined.",
-                        "Re-run the task and confirm if the submission was actually intended.",
-                    )
-                )
-        session.type_text(index, text, submit=submit)
-    elif action == "scroll":
-        session.scroll(args.get("direction", "down"))
-    elif action == "go_back":
-        session.go_back()
-    elif action == "wait":
-        session.wait(int(args.get("ms", 1000)))
-    else:
+    provider = tool_owner.get(action)
+    if provider is None:
         raise ValueError(f"Unknown action from model: {action!r}")
+
+    # Lazily start whatever resource this arm needs (e.g. Chrome on the
+    # first browser action) before deciding risk or executing -- a no-op
+    # for arms with nothing to start, or once already started.
+    provider.ensure_ready()
+
+    risk = provider.get_dynamic_risk(action, args) or tool_spec_by_name[action].risk_level
+    if not dry_run and requires_confirmation(risk, config):
+        desc = provider.describe_for_confirmation(action, args)
+        if not confirm(f"Ready to {desc}. Continue?"):
+            raise TaskCannotBeCompleted(
+                explain(
+                    "User declined a sensitive action.",
+                    f"{desc[0].upper()}{desc[1:]} was flagged for confirmation and declined.",
+                    "Re-run the task and confirm the action if it was actually intended.",
+                )
+            )
+
+    return provider.execute(action, args)
 
 
 def _save_output(task: str, result: str) -> Path:

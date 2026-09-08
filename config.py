@@ -63,6 +63,10 @@ class Config:
 
     # --- Safety ---
     confirm_sensitive_actions: bool = field(default_factory=lambda: _bool("CONFIRM_SENSITIVE_ACTIONS", True))
+    # R1 (reversible, in-memory-only writes, e.g. excel_write_cell) confirm
+    # only if this is explicitly turned on -- off by default, since undoing
+    # them is as simple as not saving/persisting. See tool_provider.py.
+    confirm_r1_actions: bool = field(default_factory=lambda: _bool("CONFIRM_R1_ACTIONS", False))
 
     # --- Discord bot interface (discord_bot.py) ---
     discord_bot_token: str = field(default_factory=lambda: os.getenv("DISCORD_BOT_TOKEN", ""))

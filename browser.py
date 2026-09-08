@@ -22,6 +22,9 @@ from dataclasses import dataclass
 
 from playwright.sync_api import Browser, BrowserContext, Page, TimeoutError as PWTimeout, sync_playwright
 
+from errors import TaskCannotBeCompleted, explain
+from tool_provider import RiskLevel, ToolProvider, ToolSpec
+
 # Tags we consider "interactive" -- i.e. worth showing to the LLM as
 # something it could click/type into. Kept small on purpose: a full DOM
 # dump would blow up token usage for no benefit.
@@ -255,3 +258,193 @@ class BrowserSession:
                 f"(only {len(self._last_elements)} elements were seen)."
             )
         return self._last_elements[index]
+
+
+# Registered into llm.py's flat tool list alongside excel_tools.py's specs
+# (via BrowserToolProvider.get_tool_specs() below). risk_level here is the
+# STATIC/base tier; click and type both start at R0 (no confirmation) and
+# get escalated at call time by get_dynamic_risk() below, because their
+# real risk depends on which element is targeted / whether a form is being
+# submitted -- something that can't be known from the tool name alone.
+BROWSER_ACTION_SPECS: dict[str, dict] = {
+    "goto": {
+        "description": "Navigate the browser to an absolute URL.",
+        "properties": {"url": {"type": "string", "description": "Absolute URL to navigate to."}},
+        "required": ["url"],
+        "risk_level": "R0",
+    },
+    "click": {
+        "description": "Click an interactive element from the CURRENT observation.",
+        "properties": {"index": {"type": "integer", "description": "Element index from the CURRENT observation."}},
+        "required": ["index"],
+        "risk_level": "R0",
+    },
+    "type": {
+        "description": "Type text into an input/textarea element from the CURRENT observation, "
+                        "optionally submitting it.",
+        "properties": {
+            "index": {"type": "integer", "description": "Element index from the CURRENT observation."},
+            "text": {"type": "string", "description": "Text to type into the element."},
+            "submit": {"type": "boolean", "description": "Press Enter after typing to submit the form."},
+        },
+        "required": ["index", "text"],
+        "risk_level": "R0",
+    },
+    "scroll": {
+        "description": "Scroll the page up or down to reveal more content.",
+        "properties": {"direction": {"type": "string", "enum": ["up", "down"]}},
+        "required": ["direction"],
+        "risk_level": "R0",
+    },
+    "go_back": {
+        "description": "Go back to the previous page in browser history.",
+        "properties": {},
+        "required": [],
+        "risk_level": "R0",
+    },
+    "wait": {
+        "description": "Wait for a page to finish loading or settle before observing it again.",
+        "properties": {"ms": {"type": "integer", "description": "Milliseconds to wait (default 1000)."}},
+        "required": [],
+        "risk_level": "R0",
+    },
+    "extract": {
+        "description": "Use when the CURRENT page's visible text already contains what's needed to answer "
+                        "the task. No browser action is taken; the loop just re-observes on the next step.",
+        "properties": {},
+        "required": [],
+        "risk_level": "R0",
+    },
+    "finish": {
+        "description": "Call this ONLY when ready to give the final answer. 'summary' must contain the "
+                        "actual information/results found (specific facts, names, figures, or extracted "
+                        "text) -- never a status confirmation like 'task complete'.",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "The complete, self-contained final answer for the user, written in full "
+                                "sentences, containing real content from the page(s) visited.",
+            }
+        },
+        "required": ["summary"],
+        "risk_level": "R0",  # intercepted by agent.py's loop before any provider dispatch; never confirmed
+    },
+    "login_required": {
+        "description": "Call this if the page shows a login form, CAPTCHA, or MFA/2FA prompt that must "
+                        "not be bypassed.",
+        "properties": {"reason": {"type": "string", "description": "Why login/verification appears to be required."}},
+        "required": ["reason"],
+        "risk_level": "R0",  # also intercepted before provider dispatch; see agent.py
+    },
+}
+
+
+class BrowserToolProvider(ToolProvider):
+    """Wraps a BrowserSession to satisfy the ToolProvider contract. Owns no
+    logic of its own beyond dispatch/risk/verify glue -- all the actual
+    browser mechanics stay in BrowserSession above, unchanged."""
+
+    def __init__(self, session: BrowserSession):
+        self.session = session
+
+    def get_tool_specs(self) -> list[ToolSpec]:
+        return [
+            ToolSpec(
+                name=name, description=spec["description"], properties=spec["properties"],
+                required=spec["required"], risk_level=spec["risk_level"],
+            )
+            for name, spec in BROWSER_ACTION_SPECS.items()
+        ]
+
+    def ensure_ready(self) -> None:
+        # Chrome is launched lazily on first use, not unconditionally at
+        # task start -- a task that never touches the browser arm (a pure
+        # Excel task) should never see a Chrome window pop up at all.
+        if self.session.page is not None:
+            return
+        try:
+            self.session.start()
+        except Exception as e:
+            raise TaskCannotBeCompleted(
+                explain(
+                    "Chrome could not be launched.",
+                    "Google Chrome may not be installed, or Playwright cannot find it.",
+                    "Install Chrome, then run 'python -m playwright install chrome' and try again.",
+                )
+            ) from e
+
+    def get_dynamic_risk(self, name: str, args: dict) -> RiskLevel | None:
+        if name == "click":
+            index = args.get("index")
+            if index is not None and self.session.is_sensitive(int(index)):
+                return "R2"
+        elif name == "type" and args.get("submit"):
+            # Confirmed whenever a form is actually being submitted,
+            # regardless of whether the target element's own text looks
+            # sensitive -- matches the original behavior this replaces.
+            return "R2"
+        return None
+
+    def describe_for_confirmation(self, name: str, args: dict) -> str:
+        if name == "click":
+            desc = self.session.element_summary(int(args["index"]))
+            return f"click {desc}. This looks like it may have side effects"
+        if name == "type":
+            desc = self.session.element_summary(int(args["index"]))
+            return f"type into {desc} and submit"
+        return super().describe_for_confirmation(name, args)
+
+    def execute(self, name: str, args: dict) -> str | None:
+        if name == "goto":
+            self.session.goto(args["url"])
+        elif name == "click":
+            self.session.click(int(args["index"]))
+        elif name == "type":
+            self.session.type_text(
+                int(args["index"]), str(args.get("text", "")), submit=bool(args.get("submit", False))
+            )
+        elif name == "scroll":
+            self.session.scroll(args.get("direction", "down"))
+        elif name == "go_back":
+            self.session.go_back()
+        elif name == "wait":
+            self.session.wait(int(args.get("ms", 1000)))
+        else:
+            raise ValueError(f"Unknown browser action: {name!r}")
+        return None
+
+    def wants_verification(self, name: str, args: dict) -> bool:
+        if name not in ("goto", "click", "type", "go_back"):
+            return False
+        if name == "type" and not args.get("submit"):
+            # A plain type that isn't submitting anything isn't expected
+            # to change the URL or page text, so checking would just be
+            # noise -- matches the original VERIFIABLE_ACTIONS behavior.
+            return False
+        return True
+
+    def verify(self, name: str, args: dict, pre_state: dict, post_state) -> str | None:
+        """
+        The explicit VERIFY step of the observe -> decide -> act -> verify
+        loop. `pre_state` is a small dict captured right after the action
+        ran (the page state just *before* it); `post_state` is the fresh
+        Observation from the very next OBSERVE. If none of the URL, the
+        visible text, or any element's state (checked/value --
+        state_fingerprint) changed after an action expected to change one
+        of them, the action probably didn't do what the model thought.
+
+        Getting this wrong in the "nothing changed" direction is worse
+        than it sounds: a real run showed a false "no observable change"
+        on a checkbox click (which doesn't add visible text) sent the
+        model into a doubt spiral -- re-clicking it repeatedly, second-
+        guessing which of two checkboxes was which, until it burned
+        through the stuck-loop guard. Comparing state_fingerprint
+        alongside the URL/text is what closes that gap for checkboxes,
+        radios, dropdowns, and typed values.
+        """
+        same_url = post_state.url == pre_state["url"]
+        same_text = post_state.visible_text == pre_state["text"]
+        same_state = post_state.state_fingerprint == pre_state["state"]
+        if same_url and same_text and same_state:
+            return f"no observable change after {name} {args} -- it may not have worked"
+        return None

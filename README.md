@@ -59,12 +59,13 @@ Concretely, each step of a task is:
    separate "pick an arm first" step. Native tool calling also keeps
    required fields (like `finish` needing an actual, non-empty answer)
    enforced by the API itself rather than hoped for from free-text JSON.
-3. **Act** -- `agent.py` dispatches that action to whichever arm owns it
-   (by name: `excel_*` goes to `excel_tools.py`, everything else to
-   `browser.py`). Browser actions that look like they submit a form, send
+3. **Act** -- `agent.py` looks up which `ToolProvider` owns the chosen
+   action (a small registry built from each arm's `get_tool_specs()`, see
+   `tool_provider.py`) and dispatches to it. Each tool has a risk tier
+   (R0-R3); browser actions that look like they submit a form, send
    something, or delete/purchase something, and `excel_save` (it
-   overwrites a real file), all ask you `[y/n]` before running (see
-   **Safety** below). Chrome itself is only launched the first time a
+   overwrites a real file), are tier R2 and ask you `[y/n]` before running
+   (see **Safety** below). Chrome itself is only launched the first time a
    browser action actually runs -- a pure "update this spreadsheet" task
    never touches it at all.
 4. **Verify** -- once the *next* OBSERVE happens (step 1 again) for a
@@ -140,9 +141,11 @@ The plan discussed for extending this beyond the browser:
 ai_browser_agent/
 ├── agent.py          # CLI entry point + the observe/decide/act/verify loop
 ├── discord_bot.py     # Discord bot interface: calls run_task() with a chat-based confirm_callback
-├── browser.py         # Browser arm: Playwright wrapper (launch Chrome, observe page, run actions)
-├── excel_tools.py      # Excel arm: openpyxl wrapper (open/read/write/save .xlsx files)
-├── llm.py             # Provider-agnostic LLM client (OpenAI / Anthropic / mock); merges both arms' tools
+├── browser.py         # Browser arm: Playwright wrapper (launch Chrome, observe page, run actions) + BrowserToolProvider
+├── excel_tools.py      # Excel arm: openpyxl wrapper (open/read/write/save .xlsx files) + ExcelToolProvider
+├── tool_provider.py    # ToolProvider/ToolSpec contract every arm implements, and the R0-R3 risk-tier policy
+├── errors.py           # Shared TaskCannotBeCompleted exception + explain() formatter
+├── llm.py             # Provider-agnostic LLM client (OpenAI / Anthropic / mock); builds tools from ToolSpecs
 ├── logger.py           # Per-task plain-text logging (with secret redaction)
 ├── config.py           # Loads and validates .env settings
 ├── requirements.txt
@@ -328,7 +331,8 @@ each other.
 | `CHROME_EXECUTABLE_PATH` | Override if Chrome is in a non-standard location |
 | `CHROME_USER_DATA_DIR` | Persistent profile folder, so manual logins carry over between runs |
 | `USE_PERSISTENT_PROFILE` | `true` keeps cookies/logins between runs |
-| `CONFIRM_SENSITIVE_ACTIONS` | `true` asks `[y/n]` before risky actions |
+| `CONFIRM_SENSITIVE_ACTIONS` | `true` asks `[y/n]` before risky (tier R2) actions |
+| `CONFIRM_R1_ACTIONS` | `true` also asks before reversible, in-memory-only writes (e.g. `excel_write_cell`); `false` by default |
 | `DISCORD_BOT_TOKEN` | Bot token for `discord_bot.py`; it refuses to start without one |
 | `DISCORD_ALLOWED_USER_ID` | Your Discord user ID; `discord_bot.py` ignores everyone else |
 

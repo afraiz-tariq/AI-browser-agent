@@ -24,6 +24,8 @@ from typing import Any
 
 import openpyxl
 
+from tool_provider import ToolProvider, ToolSpec
+
 
 class ExcelError(Exception):
     """Raised for any Excel arm failure (bad path, bad sheet, bad cell, ...)."""
@@ -59,11 +61,13 @@ EXCEL_ACTION_SPECS: dict[str, dict[str, Any]] = {
             },
         },
         "required": ["path"],
+        "risk_level": "R0",
     },
     "excel_list_sheets": {
         "description": "List the sheet names in the currently open workbook.",
         "properties": {},
         "required": [],
+        "risk_level": "R0",
     },
     "excel_read_cell": {
         "description": "Read the value of a single cell.",
@@ -72,6 +76,7 @@ EXCEL_ACTION_SPECS: dict[str, dict[str, Any]] = {
             "cell": {"type": "string", "description": "Cell reference, e.g. 'A1'."},
         },
         "required": ["sheet", "cell"],
+        "risk_level": "R0",
     },
     "excel_read_range": {
         "description": "Read a rectangular range of cells as rows of values -- use this to scan a table "
@@ -81,6 +86,7 @@ EXCEL_ACTION_SPECS: dict[str, dict[str, Any]] = {
             "cell_range": {"type": "string", "description": "Range reference, e.g. 'A1:C10'."},
         },
         "required": ["sheet", "cell_range"],
+        "risk_level": "R0",
     },
     "excel_write_cell": {
         "description": "Write a value into a single cell. This does not save to disk -- call excel_save "
@@ -95,6 +101,11 @@ EXCEL_ACTION_SPECS: dict[str, dict[str, Any]] = {
             },
         },
         "required": ["sheet", "cell", "value"],
+        # In-memory only, cheap to undo (just don't excel_save) -- reversible
+        # write, R1. Confirms only if CONFIRM_R1_ACTIONS is explicitly
+        # turned on in .env; off by default, matching original behavior
+        # (excel_write_cell was never in the old ALWAYS_CONFIRM_EXCEL_ACTIONS set).
+        "risk_level": "R1",
     },
     "excel_save": {
         "description": "Save the open workbook to disk, overwriting the file it was opened from unless a "
@@ -104,6 +115,7 @@ EXCEL_ACTION_SPECS: dict[str, dict[str, Any]] = {
             "path": {"type": "string", "description": "Optional: save to a different path instead of overwriting."},
         },
         "required": [],
+        "risk_level": "R2",  # touches disk -- matches original ALWAYS_CONFIRM_EXCEL_ACTIONS behavior
     },
 }
 
@@ -198,3 +210,36 @@ class ExcelSession:
     def close(self) -> None:
         self._workbook = None
         self._path = None
+
+
+class ExcelToolProvider(ToolProvider):
+    """Wraps an ExcelSession to satisfy the ToolProvider contract. Owns no
+    logic of its own beyond dispatch/description glue -- all the actual
+    openpyxl mechanics stay in ExcelSession above, unchanged."""
+
+    def __init__(self, excel_session: ExcelSession):
+        self.excel_session = excel_session
+
+    def get_tool_specs(self) -> list[ToolSpec]:
+        return [
+            ToolSpec(
+                name=name, description=spec["description"], properties=spec["properties"],
+                required=spec["required"], risk_level=spec["risk_level"],
+            )
+            for name, spec in EXCEL_ACTION_SPECS.items()
+        ]
+
+    def execute(self, name: str, args: dict) -> str | None:
+        return self.excel_session.execute(name, args)
+
+    def describe_for_confirmation(self, name: str, args: dict) -> str:
+        if name == "excel_save":
+            target = args.get("path") or self.excel_session.path or "(current file)"
+            return f"save the workbook to '{target}', overwriting it"
+        return super().describe_for_confirmation(name, args)
+
+    # ensure_ready(), get_dynamic_risk(), verify(), wants_verification() all
+    # use ToolProvider's defaults -- Excel has no process to lazily start,
+    # every action's risk is fully determined by its static risk_level, and
+    # Excel actions are deterministic/self-reporting so there's nothing for
+    # VERIFY to check.
