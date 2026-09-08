@@ -98,6 +98,24 @@ heavier agent framework) so each step is visible in a few hundred lines of
 commented Python -- see `agent.py`, `browser.py`, `excel_tools.py`, and
 `llm.py` for the actual mechanics.
 
+### MCP arm (optional, off by default)
+
+A third arm, `mcp_tools.py`, wraps an [MCP](https://modelcontextprotocol.io)
+server as a `ToolProvider` -- additive, not a replacement for the browser/
+Excel arms. Today it wires up exactly one server, the official read-only
+"fetch" reference server (HTTP GET + HTML-to-text extraction), whose tools
+appear in the model's flat tool list as `mcp_fetch`. It's off by default
+(`ENABLE_MCP_FETCH=false`); turn it on after `pip install mcp mcp-server-fetch`.
+
+Risk classification for MCP tools is done by this codebase, never taken
+from the server's own tool description -- see `mcp_tools.py`'s
+`FETCH_SERVER_RISK_OVERRIDES`. Any tool an MCP server exposes that isn't
+explicitly reviewed there defaults to tier R3 (always confirm, not
+configurable off), so a server update that silently adds a new or
+dangerous tool can't skip confirmation just because the server calls it
+safe. Adding a second MCP server later means adding one more small factory
+function like `build_fetch_provider()`, not changing `MCPToolProvider` itself.
+
 ## Phase 2 design
 
 The plan discussed for extending this beyond the browser:
@@ -143,6 +161,7 @@ ai_browser_agent/
 ├── discord_bot.py     # Discord bot interface: calls run_task() with a chat-based confirm_callback
 ├── browser.py         # Browser arm: Playwright wrapper (launch Chrome, observe page, run actions) + BrowserToolProvider
 ├── excel_tools.py      # Excel arm: openpyxl wrapper (open/read/write/save .xlsx files) + ExcelToolProvider
+├── mcp_tools.py        # MCP arm (optional): wraps an MCP server (e.g. the "fetch" server) as a ToolProvider
 ├── tool_provider.py    # ToolProvider/ToolSpec contract every arm implements, and the R0-R3 risk-tier policy
 ├── errors.py           # Shared TaskCannotBeCompleted exception + explain() formatter
 ├── llm.py             # Provider-agnostic LLM client (OpenAI / Anthropic / mock); builds tools from ToolSpecs
@@ -333,6 +352,8 @@ each other.
 | `USE_PERSISTENT_PROFILE` | `true` keeps cookies/logins between runs |
 | `CONFIRM_SENSITIVE_ACTIONS` | `true` asks `[y/n]` before risky (tier R2) actions |
 | `CONFIRM_R1_ACTIONS` | `true` also asks before reversible, in-memory-only writes (e.g. `excel_write_cell`); `false` by default |
+| `ENABLE_MCP_FETCH` | `true` adds the read-only MCP "fetch" arm (`mcp_fetch`); `false` by default -- see **MCP arm** above |
+| `MCP_FETCH_COMMAND` | Command used to launch the fetch MCP server; default `mcp-server-fetch` (must be on PATH) |
 | `DISCORD_BOT_TOKEN` | Bot token for `discord_bot.py`; it refuses to start without one |
 | `DISCORD_ALLOWED_USER_ID` | Your Discord user ID; `discord_bot.py` ignores everyone else |
 

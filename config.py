@@ -72,6 +72,12 @@ class Config:
     discord_bot_token: str = field(default_factory=lambda: os.getenv("DISCORD_BOT_TOKEN", ""))
     discord_allowed_user_id: int = field(default_factory=lambda: _int("DISCORD_ALLOWED_USER_ID", 0))
 
+    # --- MCP (Model Context Protocol) arm -- see mcp_tools.py ---
+    # Off by default: this is an additive third arm (ARCHITECTURE_DECISIONS.md
+    # section 4), not something every task should suddenly depend on.
+    enable_mcp_fetch: bool = field(default_factory=lambda: _bool("ENABLE_MCP_FETCH", False))
+    mcp_fetch_command: str = field(default_factory=lambda: os.getenv("MCP_FETCH_COMMAND", "mcp-server-fetch"))
+
     def validate(self) -> list[str]:
         """Return a list of human-readable problems, empty if config is OK."""
         problems = []

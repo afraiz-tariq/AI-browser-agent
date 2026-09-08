@@ -33,6 +33,7 @@ from errors import TaskCannotBeCompleted, explain
 from excel_tools import ExcelSession, ExcelToolProvider
 from llm import LLMClient, LLMError
 from logger import TaskLogger
+from mcp_tools import MCPToolProvider, build_fetch_provider
 from tool_provider import ToolProvider, ToolSpec, requires_confirmation
 
 
@@ -102,23 +103,7 @@ def run_task(
     confirm = confirm_callback or ask_confirmation
     session = BrowserSession(config)  # Chrome itself isn't launched until first use -- see BrowserToolProvider.ensure_ready
     excel_session = ExcelSession()
-
-    # One ToolProvider per arm, registered by tool name -- this is the
-    # registry that replaces the old string-prefix dispatch (`if
-    # action.startswith("excel_")`). Adding a third arm (MCP, eventually)
-    # means adding one more provider here; nothing else in this loop needs
-    # to change. See tool_provider.py.
-    providers: list[ToolProvider] = [BrowserToolProvider(session), ExcelToolProvider(excel_session)]
-    tool_specs: list[ToolSpec] = []
-    tool_owner: dict[str, ToolProvider] = {}
-    tool_spec_by_name: dict[str, ToolSpec] = {}
-    for provider in providers:
-        for spec in provider.get_tool_specs():
-            tool_specs.append(spec)
-            tool_owner[spec.name] = provider
-            tool_spec_by_name[spec.name] = spec
-
-    llm = llm_client or LLMClient.from_config(config, tool_specs)
+    mcp_provider: MCPToolProvider | None = None  # only set if ENABLE_MCP_FETCH -- closed in the finally below
 
     history: list[str] = []
     result_summary = None
@@ -126,8 +111,34 @@ def run_task(
     empty_finish_attempts = 0
     wall_offer_attempts = 0
     pending_verify: dict | None = None
+    llm = None
 
     try:
+        # One ToolProvider per arm, registered by tool name -- this is the
+        # registry that replaces the old string-prefix dispatch (`if
+        # action.startswith("excel_")`). Adding a further arm means adding
+        # one more provider here; nothing else in this loop needs to
+        # change. See tool_provider.py. This runs inside the try block
+        # because MCPToolProvider.get_tool_specs() has to actually start
+        # its server to discover its tools (unlike the browser/Excel arms,
+        # whose specs are static) -- a startup failure there is a
+        # TaskCannotBeCompleted like any other hard stop, not a crash.
+        providers: list[ToolProvider] = [BrowserToolProvider(session), ExcelToolProvider(excel_session)]
+        if config.enable_mcp_fetch:
+            mcp_provider = build_fetch_provider(config)
+            providers.append(mcp_provider)
+
+        tool_specs: list[ToolSpec] = []
+        tool_owner: dict[str, ToolProvider] = {}
+        tool_spec_by_name: dict[str, ToolSpec] = {}
+        for provider in providers:
+            for spec in provider.get_tool_specs():
+                tool_specs.append(spec)
+                tool_owner[spec.name] = provider
+                tool_spec_by_name[spec.name] = spec
+
+        llm = llm_client or LLMClient.from_config(config, tool_specs)
+
         for step in range(1, config.max_steps + 1):
             # OBSERVE only applies to the browser arm. Before the browser
             # has been used at all (session.page is None -- e.g. an
@@ -319,6 +330,8 @@ def run_task(
     finally:
         session.stop()
         excel_session.close()
+        if mcp_provider is not None:
+            mcp_provider.close()
 
     if error_message:
         logger.finish(f"FAILED\n{error_message}")

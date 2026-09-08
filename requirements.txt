@@ -5,3 +5,9 @@ openpyxl>=3.1,<4.0
 discord.py>=2.7,<3.0
 # Optional: only needed if you set LLM_PROVIDER=openai in .env
 # openai>=1.40,<2.0
+# Optional: only needed if you set ENABLE_MCP_FETCH=true in .env -- pinned
+# below v2 since the MCP Python SDK's v2 release rewrote its server/client
+# API; the reference "fetch" server (and this project's mcp_tools.py) are
+# both built against the well-established v1 API.
+# mcp<2
+# mcp-server-fetch
