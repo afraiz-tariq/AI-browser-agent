@@ -437,7 +437,10 @@ wall, and a task that doesn't finish within `MAX_STEPS`.
 
 The test suite runs entirely offline against local fixture pages
 (`tests/fixtures/`) using a scripted `mock` LLM provider, so it needs no
-API key and no internet access:
+API key and no internet access. This includes `discord_bot.py`'s own
+plumbing (permission gating, the pending-confirmation state machine, the
+single-task lock) with no real Discord connection made -- see
+`tests/test_discord_bot.py`:
 
 ```
 pip install pytest

@@ -21,9 +21,9 @@ Unlike server.py's HTTP approach (superseded by this bot -- see git
 history), Discord's back-and-forth messaging lets sensitive-action
 confirmations be genuinely interactive: the bot posts "Ready to click
 Submit, y/n?" into the same channel and blocks the task's worker thread on
-a queue.Queue().get(timeout=300) for your reply, instead of having to
-auto-decline every sensitive action the way a one-shot HTTP request would.
-See run_task()'s confirm_callback parameter in agent.py.
+a queue.Queue().get(timeout=CONFIRMATION_TIMEOUT_S) for your reply, instead
+of having to auto-decline every sensitive action the way a one-shot HTTP
+request would. See run_task()'s confirm_callback parameter in agent.py.
 """
 from __future__ import annotations
 
@@ -57,6 +57,11 @@ _pending_confirmation: queue.Queue | None = None
 
 _DISCORD_MAX_LEN = 2000
 _CHUNK_SIZE = 1900  # headroom under Discord's 2000-char cap
+# How long a sensitive-action confirmation waits for a reply before
+# auto-declining. A module-level constant (rather than a literal inline in
+# _make_confirm_callback) so tests can monkeypatch it down from 5 minutes
+# to exercise the timeout path without actually waiting 5 minutes.
+CONFIRMATION_TIMEOUT_S = 300
 
 intents = discord.Intents.default()
 intents.message_content = True  # required to read message text at all
@@ -88,15 +93,16 @@ def _make_confirm_callback(
         answer_queue: queue.Queue = queue.Queue()
         _pending_confirmation = answer_queue
         asyncio.run_coroutine_threadsafe(
-            channel.send(f"{prompt}\nReply **y** to continue or **n** to decline (auto-declines in 5 minutes)."),
+            channel.send(f"{prompt}\nReply **y** to continue or **n** to decline "
+                         f"(auto-declines in {CONFIRMATION_TIMEOUT_S // 60} minutes)."),
             loop,
         )
         try:
-            return answer_queue.get(timeout=300)
+            return answer_queue.get(timeout=CONFIRMATION_TIMEOUT_S)
         except queue.Empty:
             _pending_confirmation = None
             asyncio.run_coroutine_threadsafe(
-                channel.send("No reply within 5 minutes -- declining automatically."), loop,
+                channel.send("No reply within the time limit -- declining automatically."), loop,
             )
             return False
 
@@ -116,10 +122,15 @@ def _run_task_sync(task_text: str, channel: discord.abc.Messageable, loop: async
 
 
 async def _send_result(channel: discord.abc.Messageable, outcome: dict) -> None:
+    # A structured record is now saved for every run, success or failure
+    # (see agent.py's _save_output) -- show its path either way, matching
+    # what `python agent.py` itself prints on the CLI.
     if outcome["success"]:
-        text = f"✅ Task complete:\n{outcome['result']}\n\nSaved to: {outcome['output_path']}"
+        text = f"✅ Task complete:\n{outcome['result']}"
     else:
         text = f"❌ Task failed:\n{outcome['result']}"
+    if outcome.get("output_path"):
+        text += f"\n\nSaved to: {outcome['output_path']}"
     await _send_long(channel, text)
 
 
@@ -163,14 +174,22 @@ async def on_message(message: discord.Message) -> None:
         _task_lock.release()
 
 
-def main() -> None:
-    problems = config.validate()
-    if not config.discord_bot_token:
+def _validate_discord_config(cfg) -> list[str]:
+    """The bot's own config problems, on top of agent.py's general ones --
+    split out from main() so it's testable without also having to mock
+    client.run()'s real Discord connection attempt."""
+    problems = cfg.validate()
+    if not cfg.discord_bot_token:
         problems.append("DISCORD_BOT_TOKEN is not set. See .env.example.")
-    if not config.discord_allowed_user_id:
+    if not cfg.discord_allowed_user_id:
         problems.append(
             "DISCORD_ALLOWED_USER_ID is not set (or is 0) -- the bot would obey no one. See .env.example."
         )
+    return problems
+
+
+def main() -> None:
+    problems = _validate_discord_config(config)
     if problems:
         print("Configuration problem(s) found:")
         for p in problems:
