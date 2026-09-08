@@ -110,8 +110,16 @@ def run_task(
     error_message = None
     empty_finish_attempts = 0
     wall_offer_attempts = 0
+    steps_taken = 0
     pending_verify: dict | None = None
     llm = None
+    # Structured result contract (see ARCHITECTURE_DECISIONS.md section 4):
+    # a record of what the task actually touched, saved to output/ for
+    # every run -- not just successful ones -- alongside the bare
+    # success/result dict this function returns (which stays exactly as
+    # it was, since discord_bot.py and the tests depend on that shape).
+    artifacts: list[dict] = []
+    verification_warnings: list[str] = []
 
     try:
         # One ToolProvider per arm, registered by tool name -- this is the
@@ -140,6 +148,7 @@ def run_task(
         llm = llm_client or LLMClient.from_config(config, tool_specs)
 
         for step in range(1, config.max_steps + 1):
+            steps_taken = step
             # OBSERVE only applies to the browser arm. Before the browser
             # has been used at all (session.page is None -- e.g. an
             # Excel-only task, or a mixed task that hasn't reached a
@@ -169,6 +178,7 @@ def run_task(
                     pending_verify["action"], pending_verify["args"], pending_verify["pre_state"], observation
                 )
                 if warning:
+                    verification_warnings.append(warning)
                     logger.note(f"VERIFY: {warning}")
                     print(f"  [verify] (!) {warning}")
                     if history:
@@ -298,6 +308,18 @@ def run_task(
             if result_text:
                 history[-1] += f" [RESULT: {result_text}]"
 
+            # Record what this action actually touched, for the structured
+            # output file (see _save_output) -- a lightweight audit trail,
+            # not something the loop's own decisions depend on.
+            if action == "goto":
+                artifacts.append({"type": "url_visited", "url": args.get("url", "")})
+            elif action == "excel_open":
+                artifacts.append({"type": "excel_file_opened", "path": str(excel_session.path)})
+            elif action == "excel_save":
+                artifacts.append({"type": "excel_file_saved", "path": str(excel_session.path)})
+            elif mcp_provider is not None and tool_owner.get(action) is mcp_provider:
+                artifacts.append({"type": "mcp_tool_call", "tool": action, "args": args})
+
             # ACT succeeded without raising -- schedule the VERIFY check for
             # the top of the next loop iteration, once we have a fresh
             # OBSERVE to compare against. Delegated to the owning provider's
@@ -333,12 +355,20 @@ def run_task(
         if mcp_provider is not None:
             mcp_provider.close()
 
+    output_path = _save_output(
+        task=task,
+        status="failed" if error_message else "success",
+        summary=error_message or result_summary or "(empty result)",
+        steps_taken=steps_taken,
+        artifacts=artifacts,
+        verification_warnings=verification_warnings,
+    )
+
     if error_message:
         logger.finish(f"FAILED\n{error_message}")
-        return {"success": False, "result": error_message}
+        return {"success": False, "result": error_message, "output_path": str(output_path)}
 
     logger.finish(result_summary or "(empty result)")
-    output_path = _save_output(task, result_summary or "")
     return {"success": True, "result": result_summary, "output_path": str(output_path)}
 
 
@@ -389,13 +419,29 @@ def _dispatch_action(
     return provider.execute(action, args)
 
 
-def _save_output(task: str, result: str) -> Path:
+def _save_output(
+    task: str, status: str, summary: str, steps_taken: int, artifacts: list[dict], verification_warnings: list[str],
+) -> Path:
+    """
+    Structured result contract (ARCHITECTURE_DECISIONS.md section 4):
+    written for every run, success or failure, not just successful ones as
+    before -- so output/ is a full audit trail of what the agent actually
+    did, not only a record of what it said at the end. `summary` is the
+    final answer on success, or the same human-readable explanation
+    returned as outcome["result"] on failure.
+    """
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     path = OUTPUT_DIR / f"{stamp}.json"
-    path.write_text(
-        json.dumps({"task": task, "result": result, "saved_at": datetime.now().isoformat()}, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    record = {
+        "task": task,
+        "status": status,
+        "summary": summary,
+        "steps_taken": steps_taken,
+        "artifacts": artifacts,
+        "verification_warnings": verification_warnings,
+        "saved_at": datetime.now().isoformat(),
+    }
+    path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
 
 
@@ -436,6 +482,7 @@ def main() -> None:
     else:
         print("TASK FAILED")
         print(outcome["result"])
+        print(f"\nSaved to: {outcome['output_path']}")
     print(f"(took {elapsed:.1f}s)")
 
 

@@ -90,8 +90,10 @@ Concretely, each step of a task is:
 5. Repeat, up to `MAX_STEPS` times, until the model returns `finish` (or
    the agent detects a login wall, a stuck loop, or a hard error).
 
-Every step is written to a per-task log file, and the final answer is also
-saved as JSON under `output/`.
+Every step is written to a per-task log file, and a structured result
+record is also saved as JSON under `output/` -- for every run, not just
+successful ones (status, summary, how many steps it took, which URLs/files/
+MCP tools it actually touched, and any VERIFY warnings raised along the way).
 
 This loop is intentionally implemented directly (rather than pulling in a
 heavier agent framework) so each step is visible in a few hundred lines of
@@ -171,7 +173,7 @@ ai_browser_agent/
 ├── .env.example
 ├── .gitignore
 ├── logs/               # One .log file per task run (gitignored)
-├── output/             # One .json result file per successful task (gitignored)
+├── output/             # One structured .json result record per task run, success or failure (gitignored)
 └── tests/              # Offline tests (mock LLM + local fixture pages + tmp .xlsx files, no internet needed)
 ```
 
@@ -234,8 +236,9 @@ Step 1: I see the Google search box, I'll type the query.
   -> type {'index': 3, 'text': 'OpenAI', 'submit': True}
 ```
 
-When the task finishes, the final answer is printed and saved to
-`output/<timestamp>.json`. A full log of the run is written to
+When the task finishes (or fails), the final answer/error is printed and a
+structured result record is saved to `output/<timestamp>.json` -- see
+**Architecture** above for its shape. A full log of the run is written to
 `logs/<timestamp>.log`.
 
 ### Example tasks
