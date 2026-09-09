@@ -50,6 +50,16 @@ Two things found only by testing against real windows (Notepad, Calculator
   above). invoke() (UIA's InvokePattern, activating the control directly
   through the accessibility API, no real mouse or focus needed) is the
   primary method instead; see _do_windows_click_control().
+- _connect_window's title matching originally went straight to a substring
+  regex (".*<title>.*"), raising an error only when 2+ windows matched.
+  Real usage (a model typing a just-typed word as a guessed window_title on
+  a busy desktop with many windows open) showed the failure mode that
+  design missed: exactly ONE window matched the guessed substring, but it
+  was the WRONG window -- no error, just silent action against an unrelated
+  window's controls. Fixed by trying an EXACT title match first (immune to
+  this, since a real title can't accidentally collide the way a short
+  guessed fragment can), falling back to the substring match only when no
+  exact match exists; see _connect_window().
 """
 from __future__ import annotations
 
@@ -104,7 +114,14 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
                         "control's underlying element when its content changes (e.g. a calculator's result "
                         "display), so a reference from before the action can report stale, pre-action text.",
         "properties": {
-            "window_title": {"type": "string", "description": "Window title, or a substring of it."},
+            "window_title": {
+                "type": "string",
+                "description": "The window's EXACT title, copied verbatim from windows_list_windows (or from "
+                                "a window you just launched -- check windows_list_windows to see its real "
+                                "title). Do not guess a short or generic substring (e.g. a word from text you "
+                                "just typed) -- on a desktop with many windows open, a short substring can "
+                                "silently match a completely unrelated window instead of raising an error.",
+            },
         },
         "required": ["window_title"],
         "risk_level": "R0",
@@ -112,7 +129,11 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
     "windows_click_control": {
         "description": "Click a control by index from the most recent windows_list_controls call for this window.",
         "properties": {
-            "window_title": {"type": "string", "description": "Same window_title used in windows_list_controls."},
+            "window_title": {
+                "type": "string",
+                "description": "The exact window_title used in the most recent windows_list_controls call "
+                                "for this window -- see that tool's description for why it must be exact.",
+            },
             "index": {"type": "integer", "description": "Control index from the most recent windows_list_controls."},
         },
         "required": ["window_title", "index"],
@@ -121,7 +142,11 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
     "windows_type_into_control": {
         "description": "Type text into a control by index from the most recent windows_list_controls call.",
         "properties": {
-            "window_title": {"type": "string", "description": "Same window_title used in windows_list_controls."},
+            "window_title": {
+                "type": "string",
+                "description": "The exact window_title used in the most recent windows_list_controls call "
+                                "for this window -- see that tool's description for why it must be exact.",
+            },
             "index": {"type": "integer", "description": "Control index from the most recent windows_list_controls."},
             "text": {"type": "string", "description": "Text to type into the control."},
         },
@@ -133,7 +158,11 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
                         "windows_list_controls call. If a click/type action happened since that listing, "
                         "call windows_list_controls again first -- see its description for why.",
         "properties": {
-            "window_title": {"type": "string", "description": "Same window_title used in windows_list_controls."},
+            "window_title": {
+                "type": "string",
+                "description": "The exact window_title used in the most recent windows_list_controls call "
+                                "for this window -- see that tool's description for why it must be exact.",
+            },
             "index": {"type": "integer", "description": "Control index from the most recent windows_list_controls."},
         },
         "required": ["window_title", "index"],
@@ -142,7 +171,11 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
     "windows_close_window": {
         "description": "Close a window by title.",
         "properties": {
-            "window_title": {"type": "string", "description": "Window title (or substring) to close."},
+            "window_title": {
+                "type": "string",
+                "description": "The window's EXACT title, copied verbatim from windows_list_windows -- see "
+                                "windows_list_controls's description for why a guessed substring is risky.",
+            },
         },
         "required": ["window_title"],
         "risk_level": "R3",
@@ -211,6 +244,22 @@ class WindowsSession:
     def _connect_window(self, window_title: str):
         from pywinauto.application import Application
 
+        # Exact match first: if window_title is a real title returned by
+        # windows_list_windows/windows_list_controls (as it should be), this
+        # can't accidentally hit an unrelated window. Real-world testing
+        # (see CHANGELOG.md) found the substring fallback below silently
+        # connecting to a completely unrelated window that happened to be
+        # the ONE match for a short, guessed substring (e.g. "Hello" instead
+        # of the real "Hello from the agent - Notepad") -- no ambiguity
+        # error, just a wrong window acted on as if it were the right one.
+        # Substring matching only kicks in when there's no exact match, for
+        # a caller that genuinely doesn't know the full title yet.
+        try:
+            app = Application(backend="uia").connect(title=window_title)
+            return app.window(title=window_title)
+        except Exception:
+            pass
+
         pattern = f".*{re.escape(window_title)}.*"
         try:
             app = Application(backend="uia").connect(title_re=pattern)
@@ -218,7 +267,8 @@ class WindowsSession:
         except Exception as e:
             raise WindowsAutomationError(
                 f"Could not find an open window matching '{window_title}': {e}. "
-                "Use windows_list_windows to see currently open window titles."
+                "Use windows_list_windows to see currently open window titles, and pass one back "
+                "EXACTLY -- a short guessed substring can silently match an unrelated window."
             ) from e
 
     def _do_windows_list_controls(self, args: dict) -> str:

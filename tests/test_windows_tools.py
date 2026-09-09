@@ -209,6 +209,42 @@ def test_list_controls_stores_indexed_controls_for_later_actions(monkeypatch):
     assert session._last_controls["My Dialog"] == [ctrl0, ctrl1]
 
 
+def test_connect_window_tries_exact_title_match_first(monkeypatch):
+    # A real title (as returned by windows_list_windows) must never fall
+    # through to substring matching, which is what can silently hit an
+    # unrelated window -- see module docstring.
+    import pywinauto.application
+
+    fake_window = MagicMock()
+    fake_app = MagicMock()
+    fake_app.connect.return_value = fake_app
+    fake_app.window.return_value = fake_window
+    monkeypatch.setattr(pywinauto.application, "Application", MagicMock(return_value=fake_app))
+
+    result = WindowsSession()._connect_window("Untitled - Notepad")
+
+    assert result is fake_window
+    fake_app.connect.assert_called_once_with(title="Untitled - Notepad")
+    fake_app.window.assert_called_once_with(title="Untitled - Notepad")
+
+
+def test_connect_window_falls_back_to_substring_when_no_exact_match(monkeypatch):
+    import pywinauto.application
+
+    fake_window = MagicMock()
+    fake_app = MagicMock()
+    fake_app.connect.side_effect = [Exception("no exact match"), fake_app]
+    fake_app.window.return_value = fake_window
+    monkeypatch.setattr(pywinauto.application, "Application", MagicMock(return_value=fake_app))
+
+    result = WindowsSession()._connect_window("Notepad")
+
+    assert result is fake_window
+    assert fake_app.connect.call_count == 2
+    _, second_call_kwargs = fake_app.connect.call_args_list[1]
+    assert "title_re" in second_call_kwargs
+
+
 def test_close_window_clears_its_stored_controls(monkeypatch):
     import pywinauto.application
 

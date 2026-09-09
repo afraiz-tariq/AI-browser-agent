@@ -30,11 +30,19 @@ full commit message.
   method instead; a control reference from `windows_list_controls` can go
   stale the moment the app updates that control in place, now documented
   in the tool descriptions so the model re-lists controls before reading
-  anything a prior action may have changed; and clicking via `click_input()`
+  anything a prior action may have changed; clicking via `click_input()`
   (real synthetic mouse input at screen coordinates) silently did nothing
   whenever another window had focus between LLM-driven steps -- caught only
   by a full agent-driven run, not isolated manual calls -- fixed by using
-  `invoke()` (UIA's InvokePattern) as the primary click method instead.
+  `invoke()` (UIA's InvokePattern) as the primary click method instead; and
+  a fourth found on a real user's machine during their own first try: a
+  short guessed window title (a word from text just typed, instead of the
+  exact title from `windows_list_windows`) silently matched one wrong,
+  unrelated window on a busy desktop with no ambiguity error, sending the
+  model chasing a false "garbled typing" trail before it self-corrected by
+  starting over. Fixed by trying an exact title match before falling back
+  to substring matching, plus stronger tool-description guidance toward
+  exact titles.
 - Added an eval suite (`evals/`) that runs representative tasks against a
   real, configured LLM and scores what the agent actually did, complementing
   the mocked test suite which only proves the mechanism is correct.
