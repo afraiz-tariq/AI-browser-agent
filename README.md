@@ -1,16 +1,21 @@
 # AI Browser Agent
 
-A small, local, command-line AI agent that reads a plain-English task, uses
-an LLM to decide what to do, and acts on it through one or more "arms" --
-Chrome (via Playwright) and Excel (via openpyxl so far) -- until the task
-is done.
+A small, local, personal AI agent that reads a plain-English task, uses an
+LLM to decide what to do, and acts on it through one or more "arms" --
+Chrome (via Playwright), Excel (via openpyxl), and three optional MCP-based
+arms (web fetch, Brave Search, local filesystem read access) -- until the
+task is done. Controllable from the command line or remotely via a Discord
+bot.
 
-**Status:** Phase 1 (the browser arm) is complete and has been validated
-with real end-to-end runs -- search, multi-page research, form-filling with
-the safety confirmation firing correctly. Phase 2 is in progress: the Excel
-arm and a Discord bot interface (`discord_bot.py`) are both built. Windows
-desktop automation is designed but not yet built (see **Phase 2 design**
-below).
+**Status:** the browser and Excel arms, the Discord bot, and all three MCP
+arms are built and validated with real end-to-end runs. Every arm
+implements a common `ToolProvider` contract (see **Architecture** below)
+with a four-tier risk model (R0 read-only through R3 always-confirm)
+governing which actions ask for `[y/n]` confirmation before running. 185
+automated tests, fully offline. Windows desktop automation is scoped (see
+**Explicitly deferred** in `ARCHITECTURE_DECISIONS.md`) but deliberately
+not built here -- it needs a real Windows GUI to test against, which this
+development environment doesn't have.
 
 ## Architecture
 
@@ -18,26 +23,31 @@ The agent is one orchestrator loop that can act through multiple arms, not
 a browser-specific program with automation bolted on:
 
 ```
-User (types a task at the prompt)
+User (CLI prompt, or a Discord DM via discord_bot.py)
         |
         v
-   agent.py              <- the observe/decide/act/verify loop lives here
+   agent.py                    <- the observe/decide/act/verify loop lives here
         |
         v
-     llm.py  <---------------------------------+
-        |  (one flat list of tools from BOTH     |
-        |   arms; the model picks exactly one)   |
-        v                                         |
-   ┌────┴─────┐                                   |
-   v          v                                   |
-browser.py  excel_tools.py                        |
-   |          |                                   |
-Playwright  openpyxl                              |
-   |          |                                   |
-Chrome ---> Website                                |
-   |                                               |
-   +----------------- result / observation --------+
+     llm.py  <-------------------------------------------+
+        |  (one flat list of tools from EVERY arm the      |
+        |   task has enabled; the model picks exactly one) |
+        v                                                   |
+   ┌────────┬──────────┬─────────────────────────┐          |
+   v        v          v                         v          |
+browser.py  excel_tools.py               mcp_tools.py (optional, per-arm opt-in)
+   |          |             ┌────────────┼────────────┐
+Playwright  openpyxl        v            v            v
+   |          |          fetch      Brave Search  filesystem
+Chrome --> Website     (web page)  (web search)  (one local folder)
+   |                       |            |             |
+   +---------- result / observation -----------------------+
 ```
+
+Every arm implements the same `ToolProvider` contract (`tool_provider.py`)
+regardless of which box above it lives in -- `agent.py`'s loop dispatches
+by tool name through one small registry, never by checking which arm it
+came from.
 
 Concretely, each step of a task is:
 
@@ -255,6 +265,15 @@ At minimum, set `ANTHROPIC_API_KEY` (the default `LLM_PROVIDER` is
 `anthropic`; set it to `openai` and fill in `OPENAI_API_KEY` instead if
 you'd rather use that). Everything else has a sensible default.
 
+**Optional: the MCP arms.** All three (`ENABLE_MCP_FETCH`,
+`ENABLE_MCP_BRAVE_SEARCH`, `ENABLE_MCP_FILESYSTEM` -- see **MCP arm**
+above) are off by default; nothing below is needed unless you turn one on.
+- `pip install mcp` is required for any of the three.
+- Fetch also needs `pip install mcp-server-fetch`.
+- Brave Search and Filesystem are launched via `npx` instead, so they need
+  [Node.js](https://nodejs.org/) installed (which also gives you `npx`) --
+  no extra pip package for either.
+
 ## Running
 
 ```
@@ -304,6 +323,13 @@ Mixed (both arms in one task):
 
 8. `Open C:\Users\me\Desktop\suppliers.xlsx, read the company name in A2, search for it on Google, and write a one-line summary of what you find into B2, then save.`
 
+MCP arms (only work once the corresponding `ENABLE_MCP_*` flag is on --
+see **MCP arm** above):
+
+9. (fetch) `Fetch https://en.wikipedia.org/wiki/Playwright_(software) and summarize what it's for.`
+10. (Brave Search) `Search the web for the current version of Playwright and tell me what it is.`
+11. (filesystem) `List the files in the folder you have access to, then read the first one and summarize it.` (points at whatever `MCP_FILESYSTEM_ROOT` is set to)
+
 ### Milestones (recommended order to test in)
 
 1. **Milestone 1**: `Open Google and search for OpenAI.` -- confirms the
@@ -321,6 +347,10 @@ Mixed (both arms in one task):
 5. **Milestone 5** (Phase 2, mixed arms): task #8 above -- confirms the
    orchestrator can move between arms within a single task and that data
    read from one arm can be used in an action on the other.
+6. **Milestone 6** (MCP arms, one at a time): turn on one `ENABLE_MCP_*`
+   flag, try its matching task (#9, #10, or #11 above), confirm it works,
+   then move to the next -- the same "prove the mechanism before trusting
+   it" approach used for the browser/Excel arms.
 
 ## Discord bot interface
 
@@ -470,7 +500,7 @@ wall, and a task that doesn't finish within `MAX_STEPS`.
   its `chrome.exe` path, or run `python -m playwright install chromium`
   and remove `CHROME_CHANNEL`/set `CHROME_EXECUTABLE_PATH` accordingly.
 - **Agent keeps saying login is required on a site you're already logged
-  into in normal Chrome** -- Phase 1 uses its *own* persistent profile
+  into in normal Chrome** -- the agent uses its *own* persistent profile
   (`CHROME_USER_DATA_DIR`), separate from your everyday Chrome profile, so
   it starts logged out everywhere. Run the agent once, let it open the
   site, and log in manually in that window -- it'll be remembered next
@@ -499,9 +529,11 @@ pip install pytest
 pytest tests/ -v
 ```
 
-## What Phase 1 deliberately does *not* do
+## What this deliberately does *not* do
 
-No web UI, no mobile app, no database, no multi-agent system, no
-always-on background process, no Windows desktop control, no long-term
-memory, no CAPTCHA/MFA bypass, no Docker. Those are candidates for a
-later phase, once this browser-only prototype has proven reliable.
+No web UI, no mobile app (Discord is the remote interface instead), no
+database, no multi-agent system, no always-on background process, no
+long-term memory across tasks, no Docker, and never a CAPTCHA/MFA bypass
+(permanent, not a scope-for-now cut). Windows desktop control is scoped
+but not built -- see `ARCHITECTURE_DECISIONS.md`'s "Explicitly deferred"
+table for this and the other candidates considered and set aside, and why.

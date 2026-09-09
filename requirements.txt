@@ -5,9 +5,16 @@ openpyxl>=3.1,<4.0
 discord.py>=2.7,<3.0
 # Optional: only needed if you set LLM_PROVIDER=openai in .env
 # openai>=1.40,<2.0
-# Optional: only needed if you set ENABLE_MCP_FETCH=true in .env -- pinned
+# Optional: only needed if you turn on ANY of the ENABLE_MCP_* flags in
+# .env (fetch, Brave Search, or filesystem -- see mcp_tools.py) -- pinned
 # below v2 since the MCP Python SDK's v2 release rewrote its server/client
 # API; the reference "fetch" server (and this project's mcp_tools.py) are
 # both built against the well-established v1 API.
 # mcp<2
+# Optional: only needed if you set ENABLE_MCP_FETCH=true specifically --
+# this is the fetch server itself, a separate package from the `mcp`
+# client library above.
 # mcp-server-fetch
+# ENABLE_MCP_BRAVE_SEARCH and ENABLE_MCP_FILESYSTEM need no extra pip
+# package -- their servers are launched via `npx` (Node.js), not pip. You
+# do need Node.js/npm installed on your machine for either of those two.
