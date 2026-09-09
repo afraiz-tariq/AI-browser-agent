@@ -104,19 +104,35 @@ commented Python -- see `agent.py`, `browser.py`, `excel_tools.py`, and
 
 A third arm, `mcp_tools.py`, wraps an [MCP](https://modelcontextprotocol.io)
 server as a `ToolProvider` -- additive, not a replacement for the browser/
-Excel arms. Today it wires up exactly one server, the official read-only
-"fetch" reference server (HTTP GET + HTML-to-text extraction), whose tools
-appear in the model's flat tool list as `mcp_fetch`. It's off by default
-(`ENABLE_MCP_FETCH=false`); turn it on after `pip install mcp mcp-server-fetch`.
+Excel arms. Each server it wires up is off by default and needs its own
+opt-in flag:
+
+- **fetch** -- the official read-only MCP reference server (HTTP GET +
+  HTML-to-text extraction), exposed as `mcp_fetch`. `ENABLE_MCP_FETCH=true`
+  after `pip install mcp mcp-server-fetch`.
+- **Brave Search** -- web/local/video/image/news search plus a summarizer,
+  via Brave's own actively-maintained `@brave/brave-search-mcp-server`
+  (deliberately not `@modelcontextprotocol/server-brave-search`, the same
+  "official reference server" family as fetch -- that one is marked
+  deprecated on npm). Exposed as `mcp_brave_web_search`,
+  `mcp_brave_local_search`, etc. Needs Node.js (run via `npx`, the same
+  real-world dependency fetch's bundled Readability engine already has)
+  and a free API key from https://brave.com/search/api/.
+  `ENABLE_MCP_BRAVE_SEARCH=true` plus `BRAVE_API_KEY=...`.
 
 Risk classification for MCP tools is done by this codebase, never taken
 from the server's own tool description -- see `mcp_tools.py`'s
-`FETCH_SERVER_RISK_OVERRIDES`. Any tool an MCP server exposes that isn't
-explicitly reviewed there defaults to tier R3 (always confirm, not
-configurable off), so a server update that silently adds a new or
-dangerous tool can't skip confirmation just because the server calls it
-safe. Adding a second MCP server later means adding one more small factory
-function like `build_fetch_provider()`, not changing `MCPToolProvider` itself.
+`FETCH_SERVER_RISK_OVERRIDES` / `BRAVE_SEARCH_RISK_OVERRIDES`. Any tool an
+MCP server exposes that isn't explicitly reviewed there defaults to tier R3
+(always confirm, not configurable off), so a server update that silently
+adds a new or dangerous tool can't skip confirmation just because the
+server calls it safe. Adding a further MCP server means adding one more
+small factory function like `build_fetch_provider()`/
+`build_brave_search_provider()`, not changing `MCPToolProvider` itself --
+which is also how an API key gets to a server that needs one: as an
+environment variable passed to just that subprocess (`MCPToolProvider`'s
+`env` argument), not a CLI argument that would show up in a local process
+listing.
 
 ## Phase 2 design
 
@@ -357,6 +373,9 @@ each other.
 | `CONFIRM_R1_ACTIONS` | `true` also asks before reversible, in-memory-only writes (e.g. `excel_write_cell`); `false` by default |
 | `ENABLE_MCP_FETCH` | `true` adds the read-only MCP "fetch" arm (`mcp_fetch`); `false` by default -- see **MCP arm** above |
 | `MCP_FETCH_COMMAND` | Command used to launch the fetch MCP server; default `mcp-server-fetch` (must be on PATH) |
+| `ENABLE_MCP_BRAVE_SEARCH` | `true` adds the read-only Brave Search arm (`mcp_brave_*`); `false` by default -- see **MCP arm** above |
+| `BRAVE_API_KEY` | Required if `ENABLE_MCP_BRAVE_SEARCH=true` -- free key from https://brave.com/search/api/ |
+| `MCP_STARTUP_TIMEOUT_S` | How long to wait for an MCP server to start before giving up; default `90` (an npx-launched server can be slow on a cold npm registry round-trip) |
 | `DISCORD_BOT_TOKEN` | Bot token for `discord_bot.py`; it refuses to start without one |
 | `DISCORD_ALLOWED_USER_ID` | Your Discord user ID; `discord_bot.py` ignores everyone else |
 

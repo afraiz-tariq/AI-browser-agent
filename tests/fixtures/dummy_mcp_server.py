@@ -12,6 +12,8 @@ the real fetch server or any network access.
 
 Run directly: `python dummy_mcp_server.py` (talks MCP over stdio).
 """
+import os
+
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("dummy-test-server")
@@ -21,6 +23,15 @@ app = FastMCP("dummy-test-server")
 def echo(text: str) -> str:
     """Echo back the given text."""
     return f"echo: {text}"
+
+
+@app.tool()
+def env_echo(var_name: str) -> str:
+    """Echo back the value of an environment variable this process sees --
+    used to prove MCPToolProvider's `env` argument is actually threaded
+    through to the spawned subprocess (see build_brave_search_provider(),
+    which passes BRAVE_API_KEY this same way)."""
+    return os.environ.get(var_name, "")
 
 
 @app.tool()

@@ -77,6 +77,19 @@ class Config:
     # section 4), not something every task should suddenly depend on.
     enable_mcp_fetch: bool = field(default_factory=lambda: _bool("ENABLE_MCP_FETCH", False))
     mcp_fetch_command: str = field(default_factory=lambda: os.getenv("MCP_FETCH_COMMAND", "mcp-server-fetch"))
+    # Second MCP server: Brave web/local/video/image/news search (also
+    # read-only, also off by default). Needs Node.js/npx and a free key
+    # from https://brave.com/search/api/.
+    enable_mcp_brave_search: bool = field(default_factory=lambda: _bool("ENABLE_MCP_BRAVE_SEARCH", False))
+    brave_api_key: str = field(default_factory=lambda: os.getenv("BRAVE_API_KEY", ""))
+    # How long to wait for an MCP server to start (subprocess spawn + MCP
+    # initialize handshake) before giving up. 90s by default -- generous
+    # because an npx-launched server can do a real network round-trip to
+    # the npm registry on every invocation even when already cached
+    # locally; raise this further if that's consistently too slow on your
+    # connection. See mcp_tools.py's STARTUP_TIMEOUT_S for the measured
+    # real-world range this was chosen against.
+    mcp_startup_timeout_s: int = field(default_factory=lambda: _int("MCP_STARTUP_TIMEOUT_S", 90))
 
     def validate(self) -> list[str]:
         """Return a list of human-readable problems, empty if config is OK."""
@@ -95,6 +108,11 @@ class Config:
             )
         if self.max_steps < 1:
             problems.append("MAX_STEPS must be at least 1.")
+        if self.enable_mcp_brave_search and not self.brave_api_key:
+            problems.append(
+                "ENABLE_MCP_BRAVE_SEARCH is true but BRAVE_API_KEY is not set. "
+                "Get a free key at https://brave.com/search/api/."
+            )
         return problems
 
 

@@ -29,6 +29,7 @@ codebase never sees an awaitable.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 from contextlib import AsyncExitStack
 from typing import Any
@@ -41,7 +42,15 @@ from tool_provider import RiskLevel, ToolProvider, ToolSpec
 # seconds. A hung server (or a network-bound tool like fetch stuck on a
 # slow site) should eventually surface as a clear error, not a silently
 # frozen task.
-STARTUP_TIMEOUT_S = 30
+#
+# 90s for startup specifically because an npx-launched server (e.g. Brave
+# Search) can do a real network round-trip to the npm registry on every
+# invocation even when the package is already cached locally, unrelated to
+# anything this code does -- measured as low as ~1s and as high as 70s+ for
+# the exact same command back to back while building this. A pip-installed
+# server (fetch) starts near-instantly regardless, so this only costs
+# anything on the slow path it's meant to tolerate.
+STARTUP_TIMEOUT_S = 90
 CALL_TIMEOUT_S = 60
 
 
@@ -69,10 +78,23 @@ class MCPToolProvider(ToolProvider):
 
     def __init__(
         self, command: str, args: list[str] | None = None, risk_overrides: dict[str, RiskLevel] | None = None,
+        env: dict[str, str] | None = None, startup_timeout: float = STARTUP_TIMEOUT_S,
     ):
         self._command = command
         self._args = args or []
         self._risk_overrides = risk_overrides or {}
+        # Extra environment variables for the subprocess -- e.g. an API key
+        # a server reads from its own environment (see
+        # build_brave_search_provider() below). Passed straight through to
+        # StdioServerParameters, which merges it with the current process's
+        # environment rather than replacing it (so PATH etc. still resolve).
+        self._env = env
+        # Overridable per instance (see config.py's MCP_STARTUP_TIMEOUT_S)
+        # because how long is "reasonable" here depends on the server and
+        # the user's own network, not just this code -- see
+        # STARTUP_TIMEOUT_S's module-level comment for the real-world
+        # range this was measured against.
+        self._startup_timeout = startup_timeout
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -89,15 +111,27 @@ class MCPToolProvider(ToolProvider):
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
         self._thread.start()
         try:
-            self._run(self._start_session(), timeout=STARTUP_TIMEOUT_S)
+            self._run(self._start_session(), timeout=self._startup_timeout)
         except Exception as e:
             self._stop_loop()
+            # concurrent.futures.TimeoutError (and asyncio's own alias for
+            # it) both stringify to "" -- str(e) alone would silently
+            # produce an empty, useless "WHY:" line for the single most
+            # likely failure mode (a slow npx registry round-trip; see
+            # STARTUP_TIMEOUT_S's comment), so it needs its own message.
+            if isinstance(e, (TimeoutError, concurrent.futures.TimeoutError)):
+                cause = (
+                    f"It did not finish starting within {self._startup_timeout}s. If this keeps happening on a "
+                    "slow connection, raise MCP_STARTUP_TIMEOUT_S in .env."
+                )
+            else:
+                cause = str(e) or f"{type(e).__name__} (no further detail)."
             raise TaskCannotBeCompleted(
                 explain(
-                    f"The MCP server ('{self._command}') could not be started.",
-                    str(e),
-                    "Check that it's installed and on PATH (e.g. `pip install mcp-server-fetch`), "
-                    "and that MCP_FETCH_COMMAND in .env points at it.",
+                    f"The MCP server ('{self._command} {' '.join(self._args)}') could not be started.",
+                    cause,
+                    "Check that the command is installed and on PATH, that any required API key is set, "
+                    "and that you have a working internet connection, then try again.",
                 )
             ) from e
 
@@ -123,7 +157,13 @@ class MCPToolProvider(ToolProvider):
         text = "\n".join(block.text for block in result.content if hasattr(block, "text"))
         if result.isError:
             raise MCPToolError(text or f"MCP tool '{tool.name}' reported an error with no details.")
-        return text or f"MCP tool '{tool.name}' returned no content."
+        # `text` being falsy is only "nothing to report" when there were no
+        # content blocks at all -- a tool whose real, meaningful result IS
+        # an empty string (e.g. a search that legitimately found nothing)
+        # must not have that silently swapped for a generic placeholder.
+        if not result.content:
+            return f"MCP tool '{tool.name}' returned no content."
+        return text
 
     def describe_for_confirmation(self, name: str, args: dict) -> str:
         tool = self._tools_by_exposed_name.get(name)
@@ -159,7 +199,7 @@ class MCPToolProvider(ToolProvider):
         from mcp.client.stdio import stdio_client
 
         self._exit_stack = AsyncExitStack()
-        params = StdioServerParameters(command=self._command, args=self._args)
+        params = StdioServerParameters(command=self._command, args=self._args, env=self._env)
         read, write = await self._exit_stack.enter_async_context(stdio_client(params))
         session = await self._exit_stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
@@ -181,10 +221,61 @@ FETCH_SERVER_RISK_OVERRIDES: dict[str, RiskLevel] = {
 
 
 def build_fetch_provider(config) -> MCPToolProvider:
-    """Factory for the one MCP server this project currently wires up --
-    see ARCHITECTURE_DECISIONS.md section 4 ("one read-only server first").
-    Adding a second server later means adding a second factory like this
-    one, not changing MCPToolProvider itself."""
+    """Factory for the fetch MCP server -- see ARCHITECTURE_DECISIONS.md
+    section 4. Adding a second server means adding a second factory like
+    this one (see build_brave_search_provider() below), not changing
+    MCPToolProvider itself."""
     return MCPToolProvider(
         command=config.mcp_fetch_command, args=[], risk_overrides=FETCH_SERVER_RISK_OVERRIDES,
+        startup_timeout=config.mcp_startup_timeout_s,
+    )
+
+
+# Reviewed once, by us: every one of these is a read-only search/lookup
+# call against Brave's Search API (web/local/video/image/news/place
+# search, an AI summarizer, and an "LLM context" helper) -- none of them
+# write, delete, or have any side effect beyond the API request itself,
+# so all are R0, the same reasoning as the fetch server's one tool. Tool
+# names confirmed directly against the real server's list_tools() output;
+# a future server version adding a new tool would NOT automatically
+# inherit R0 -- it falls through to R3 until reviewed and added here.
+#
+# Deliberately @brave/brave-search-mcp-server (published by Brave itself,
+# actively maintained), NOT @modelcontextprotocol/server-brave-search --
+# that one is the same "official reference server" family as the fetch
+# server this project already uses, but it's been marked deprecated
+# ("Package no longer supported") on npm; installing a known-unsupported
+# package as a new dependency isn't worth it when Brave publishes and
+# maintains their own replacement.
+BRAVE_SEARCH_RISK_OVERRIDES: dict[str, RiskLevel] = {
+    "brave_web_search": "R0",
+    "brave_local_search": "R0",
+    "brave_video_search": "R0",
+    "brave_image_search": "R0",
+    "brave_news_search": "R0",
+    "brave_summarizer": "R0",
+    "brave_llm_context": "R0",
+    "brave_place_search": "R0",
+}
+
+
+def build_brave_search_provider(config) -> MCPToolProvider:
+    """Factory for the second MCP server this project wires up: Brave's
+    own web/local/video/image/news search, via npx (it's an npm package --
+    Node.js must be installed, the same real-world dependency the fetch
+    server's bundled Readability engine already has). The API key is
+    passed as an env var rather than a CLI arg so it doesn't show up in a
+    local process listing (`ps`/Task Manager).
+
+    Pinned to the exact version BRAVE_SEARCH_RISK_OVERRIDES was reviewed
+    against -- an unpinned `npx -y` would silently pick up whatever a
+    future release adds. That's not a safety hole on its own (an
+    unreviewed new tool still falls through to R3 -- see this module's
+    docstring), but there's no reason to let the tool list drift out from
+    under a fixed risk review when pinning costs nothing.
+    """
+    return MCPToolProvider(
+        command="npx", args=["-y", "@brave/brave-search-mcp-server@2.1.3"],
+        env={"BRAVE_API_KEY": config.brave_api_key}, risk_overrides=BRAVE_SEARCH_RISK_OVERRIDES,
+        startup_timeout=config.mcp_startup_timeout_s,
     )

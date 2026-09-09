@@ -16,10 +16,27 @@ import pytest
 
 pytest.importorskip("mcp")
 
-from mcp_tools import MCPToolError, MCPToolProvider  # noqa: E402
+from mcp_tools import FETCH_SERVER_RISK_OVERRIDES, MCPToolError, MCPToolProvider, build_fetch_provider  # noqa: E402
 from tool_provider import requires_confirmation  # noqa: E402
 
 DUMMY_SERVER = Path(__file__).parent / "fixtures" / "dummy_mcp_server.py"
+
+
+class _FakeConfig:
+    def __init__(self, mcp_fetch_command="mcp-server-fetch", mcp_startup_timeout_s=90):
+        self.mcp_fetch_command = mcp_fetch_command
+        self.mcp_startup_timeout_s = mcp_startup_timeout_s
+
+
+def test_build_fetch_provider_uses_the_configured_command():
+    provider = build_fetch_provider(_FakeConfig(mcp_fetch_command="custom-fetch-command"))
+    assert provider._command == "custom-fetch-command"
+    assert provider._risk_overrides == FETCH_SERVER_RISK_OVERRIDES
+
+
+def test_build_fetch_provider_threads_through_the_configured_startup_timeout():
+    provider = build_fetch_provider(_FakeConfig(mcp_startup_timeout_s=42))
+    assert provider._startup_timeout == 42
 
 
 @pytest.fixture()
@@ -93,3 +110,55 @@ def test_starting_a_nonexistent_command_raises_task_cannot_be_completed():
     with pytest.raises(TaskCannotBeCompleted):
         p.ensure_ready()
     p.close()
+
+
+def test_a_startup_timeout_produces_a_clear_message_not_an_empty_one():
+    # Regression test: a real slow-starting server (an npx-launched one can
+    # take 70+ seconds on a slow npm registry round-trip -- see
+    # STARTUP_TIMEOUT_S's comment) raises concurrent.futures.TimeoutError,
+    # whose str() is "". The original code passed that straight through as
+    # the explanation, producing a "WHY: " line with nothing after it.
+    from errors import TaskCannotBeCompleted
+
+    p = MCPToolProvider(
+        command=sys.executable, args=[str(DUMMY_SERVER)],
+        startup_timeout=0.001,  # too short for any real subprocess to answer in
+    )
+    with pytest.raises(TaskCannotBeCompleted) as exc_info:
+        p.ensure_ready()
+    message = str(exc_info.value)
+    assert "WHY: \n" not in message and not message.rstrip().endswith("WHY:")
+    assert "0.001" in message or "did not finish starting" in message
+    p.close()
+
+
+def test_env_argument_is_passed_through_to_the_subprocess():
+    # This is the mechanism build_brave_search_provider() relies on to
+    # hand BRAVE_API_KEY to the real server without it showing up in a
+    # local process listing -- proven here against the offline dummy
+    # server instead of the real (networked) Brave server.
+    p = MCPToolProvider(
+        command=sys.executable, args=[str(DUMMY_SERVER)], env={"DUMMY_ENV_VAR": "secret-value-123"},
+    )
+    try:
+        p.get_tool_specs()
+        result = p.execute("mcp_env_echo", {"var_name": "DUMMY_ENV_VAR"})
+        assert result == "secret-value-123"
+    finally:
+        p.close()
+
+
+def test_no_env_argument_means_the_subprocess_does_not_see_an_unset_var():
+    # Regression test: env_echo legitimately returns "" here (the var
+    # genuinely isn't set) -- execute() must return that empty string as
+    # the tool's real result, not silently swap it for a "no content"
+    # placeholder just because it happens to be falsy. See execute()'s
+    # `if not result.content` check, which distinguishes "no content
+    # blocks at all" from "a content block whose text is empty".
+    p = MCPToolProvider(command=sys.executable, args=[str(DUMMY_SERVER)])
+    try:
+        p.get_tool_specs()
+        result = p.execute("mcp_env_echo", {"var_name": "SOME_VAR_THAT_IS_DEFINITELY_NOT_SET"})
+        assert result == ""
+    finally:
+        p.close()

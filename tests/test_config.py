@@ -91,6 +91,23 @@ def test_validate_flags_non_positive_max_steps(max_steps):
     assert any("MAX_STEPS" in p for p in problems)
 
 
+def test_validate_flags_brave_search_enabled_without_an_api_key():
+    problems = Config(llm_provider="mock", max_steps=5, enable_mcp_brave_search=True, brave_api_key="").validate()
+    assert any("BRAVE_API_KEY" in p for p in problems)
+
+
+def test_validate_passes_with_brave_search_enabled_and_a_key_set():
+    problems = Config(
+        llm_provider="mock", max_steps=5, enable_mcp_brave_search=True, brave_api_key="a-real-looking-key",
+    ).validate()
+    assert problems == []
+
+
+def test_validate_does_not_require_a_brave_key_when_brave_search_is_disabled():
+    problems = Config(llm_provider="mock", max_steps=5, enable_mcp_brave_search=False, brave_api_key="").validate()
+    assert problems == []
+
+
 def test_validate_can_report_multiple_problems_at_once():
     problems = Config(llm_provider="openai", openai_api_key="", max_steps=0).validate()
     assert len(problems) >= 2

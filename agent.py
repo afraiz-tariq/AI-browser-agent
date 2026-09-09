@@ -33,7 +33,7 @@ from errors import TaskCannotBeCompleted, explain
 from excel_tools import ExcelSession, ExcelToolProvider
 from llm import LLMClient, LLMError
 from logger import TaskLogger
-from mcp_tools import MCPToolProvider, build_fetch_provider
+from mcp_tools import MCPToolProvider, build_brave_search_provider, build_fetch_provider
 from tool_provider import ToolProvider, ToolSpec, requires_confirmation
 
 
@@ -103,7 +103,7 @@ def run_task(
     confirm = confirm_callback or ask_confirmation
     session = BrowserSession(config)  # Chrome itself isn't launched until first use -- see BrowserToolProvider.ensure_ready
     excel_session = ExcelSession()
-    mcp_provider: MCPToolProvider | None = None  # only set if ENABLE_MCP_FETCH -- closed in the finally below
+    mcp_providers: list[MCPToolProvider] = []  # only non-empty per ENABLE_MCP_* flags -- closed in the finally below
 
     history: list[str] = []
     result_summary = None
@@ -133,8 +133,10 @@ def run_task(
         # TaskCannotBeCompleted like any other hard stop, not a crash.
         providers: list[ToolProvider] = [BrowserToolProvider(session), ExcelToolProvider(excel_session)]
         if config.enable_mcp_fetch:
-            mcp_provider = build_fetch_provider(config)
-            providers.append(mcp_provider)
+            mcp_providers.append(build_fetch_provider(config))
+        if config.enable_mcp_brave_search:
+            mcp_providers.append(build_brave_search_provider(config))
+        providers.extend(mcp_providers)
 
         tool_specs: list[ToolSpec] = []
         tool_owner: dict[str, ToolProvider] = {}
@@ -317,7 +319,7 @@ def run_task(
                 artifacts.append({"type": "excel_file_opened", "path": str(excel_session.path)})
             elif action == "excel_save":
                 artifacts.append({"type": "excel_file_saved", "path": str(excel_session.path)})
-            elif mcp_provider is not None and tool_owner.get(action) is mcp_provider:
+            elif tool_owner.get(action) in mcp_providers:
                 artifacts.append({"type": "mcp_tool_call", "tool": action, "args": args})
 
             # ACT succeeded without raising -- schedule the VERIFY check for
@@ -352,8 +354,8 @@ def run_task(
     finally:
         session.stop()
         excel_session.close()
-        if mcp_provider is not None:
-            mcp_provider.close()
+        for provider in mcp_providers:
+            provider.close()
 
     output_path = _save_output(
         task=task,
