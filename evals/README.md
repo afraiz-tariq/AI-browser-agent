@@ -50,6 +50,9 @@ configured it, since that's what's actually being evaluated.
   persisting it via the Excel arm, in one task.
 - **MCP arms** (each skipped cleanly, not failed, if its `ENABLE_MCP_*`
   flag is off): fetch, local filesystem read, Brave Search.
+- **Windows desktop automation** (skipped cleanly if `ENABLE_WINDOWS_AUTOMATION`
+  is off, and only runnable on Windows in the first place): launch
+  Calculator, compute 7 + 3 via its real UI controls, and report the result.
 
 See `tasks.py` for the exact task text and `check()` functions.
 

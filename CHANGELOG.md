@@ -14,6 +14,11 @@ full commit message.
 
 ## 2026-09-09
 
+- Added a Windows automation eval task (`evals/tasks.py`): launch
+  Calculator, compute 7 + 3 via its real UI controls, and report the
+  result -- the same task the arm was manually verified against
+  end-to-end while building it. Skips cleanly, like the MCP eval tasks,
+  when `ENABLE_WINDOWS_AUTOMATION` is off.
 - Added a GitHub Actions workflow (`.github/workflows/tests.yml`) that runs
   the offline test suite on every push/PR to `main` -- the project had no CI
   at all before this; every prior test run was manual.

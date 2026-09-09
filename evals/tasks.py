@@ -23,6 +23,7 @@ sizing philosophy.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -351,6 +352,42 @@ TASK_MCP_BRAVE_SEARCH = EvalTask(
     requires=lambda config: config.enable_mcp_brave_search and bool(config.brave_api_key),
 )
 
+# --- Windows desktop automation (windows_tools.py) -- config-gated and
+# Windows-only, same as the MCP tasks above: skips cleanly, not a failure,
+# when ENABLE_WINDOWS_AUTOMATION is off or when run on a non-Windows
+# machine (config.validate() already refuses to even start a task in that
+# combination -- see config.py -- so run_task() itself would fail loudly
+# rather than this task silently mis-scoring). Mirrors the exact task the
+# arm was manually verified against end-to-end while building it (see
+# CHANGELOG.md's 2026-09-09 entry): launch Calculator, drive its buttons
+# via windows_list_controls/windows_click_control, read the result back,
+# then close it.
+
+
+def _build_windows_calculator(ctx: EvalContext) -> str:
+    return (
+        "Launch the Windows Calculator app, use its buttons to compute 7 + 3, tell me the exact result "
+        "shown on the display afterward, and then close the Calculator window."
+    )
+
+
+def _check_windows_calculator(outcome: dict, ctx: EvalContext) -> tuple[bool, str]:
+    if not outcome["success"]:
+        return False, f"Task reported failure: {outcome['result']}"
+    if not re.search(r"\b10\b", outcome.get("result") or ""):
+        return False, f"Expected the result '10' (7 + 3) in the summary, got: {outcome['result']!r}"
+    return True, "Correctly computed 7 + 3 = 10 via the Calculator app's own controls and reported it."
+
+
+TASK_WINDOWS_CALCULATOR = EvalTask(
+    id="windows_calculator",
+    description="Launch Calculator, compute 7 + 3 via its real UI controls, and report the result "
+                "(Windows only, needs ENABLE_WINDOWS_AUTOMATION).",
+    build=_build_windows_calculator,
+    check=_check_windows_calculator,
+    requires=lambda config: config.enable_windows_automation,
+)
+
 
 TASKS: list[EvalTask] = [
     TASK_SEARCH_AND_EXTRACT,
@@ -364,4 +401,5 @@ TASKS: list[EvalTask] = [
     TASK_MCP_FETCH,
     TASK_MCP_FILESYSTEM,
     TASK_MCP_BRAVE_SEARCH,
+    TASK_WINDOWS_CALCULATOR,
 ]
