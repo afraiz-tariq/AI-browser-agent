@@ -14,6 +14,19 @@ full commit message.
 
 ## 2026-09-09
 
+- Fixed `windows_type_into_control` still producing corrupted text
+  (`"hello world"` -> `"hello orld"`, a dropped `w`, or `"hello ddddd"`,
+  garbled/repeated characters) even after switching to `type_keys()` --
+  root cause was `set_focus()` returning before focus had actually
+  settled, so the first keystroke(s) sent immediately after could be
+  dropped, plus `type_keys()`'s default (unpaced) rate outrunning a
+  busier app. Fixed with an explicit settling delay before typing and an
+  explicit inter-keystroke pause. Verified with 5/5 clean back-to-back
+  typing attempts against genuinely isolated targets, after discovering
+  (the hard way) that this machine's Notepad is single-instance with
+  tabs -- repeated `windows_launch_app` calls add tabs to one shared
+  process rather than opening independent windows, which had been
+  quietly confounding earlier repro attempts.
 - Loosened the Windows automation arm's confirmation policy from "every
   mutating action always confirms" to dynamic, content-aware risk --
   mirroring the browser arm's existing pattern rather than inventing a new

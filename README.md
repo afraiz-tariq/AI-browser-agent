@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 188 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 189 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -224,24 +224,31 @@ worked. A launched app is deliberately left running when the task ends
 rather than force-closed, since that could destroy the user's unsaved
 work in it.
 
-Four things found only by testing against real windows -- some by isolated
+Five things found only by testing against real windows -- some by isolated
 manual calls, others only by a full end-to-end run of the actual agent
-loop (including one on a real user's own machine on their first try) --
-not from pywinauto's docs alone (see `windows_tools.py`'s module docstring
-and `CHANGELOG.md`): typing via UIA's `ValuePattern` (`set_edit_text`)
-silently wrote corrupted text into a modern WinUI-based app's control with
-no exception raised, so `type_keys()` (real simulated keystrokes) is the
-primary method instead; the stale-control-reference issue documented
-above; clicking via `click_input()` (real synthetic mouse input at screen
-coordinates) silently did nothing whenever another window had focus
-between LLM-driven steps -- exactly the "blind pixel/coordinate clicking"
-this arm is meant to avoid -- so `invoke()` (UIA's InvokePattern) is the
-primary click method instead; and a short guessed `window_title` (e.g. a
-word from text just typed) could silently match one wrong, unrelated
-window on a busy desktop with no ambiguity error -- fixed by trying an
-exact title match first, falling back to substring matching only when
-no exact match exists, plus stronger guidance in the tool descriptions to
-always pass the exact title from `windows_list_windows`. `pip install
+loop (including several on a real user's own machine, not just this
+project's own dev environment) -- not from pywinauto's docs alone (see
+`windows_tools.py`'s module docstring and `CHANGELOG.md`): typing via
+UIA's `ValuePattern` (`set_edit_text`) silently wrote corrupted text into
+a modern WinUI-based app's control with no exception raised, so
+`type_keys()` (real simulated keystrokes) is the primary method instead;
+the stale-control-reference issue documented above; clicking via
+`click_input()` (real synthetic mouse input at screen coordinates)
+silently did nothing whenever another window had focus between LLM-driven
+steps -- exactly the "blind pixel/coordinate clicking" this arm is meant
+to avoid -- so `invoke()` (UIA's InvokePattern) is the primary click
+method instead; a short guessed `window_title` (e.g. a word from text
+just typed) could silently match one wrong, unrelated window on a busy
+desktop with no ambiguity error -- fixed by trying an exact title match
+first, falling back to substring matching only when no exact match
+exists, plus stronger guidance in the tool descriptions to always pass
+the exact title from `windows_list_windows`; and even with `type_keys()`
+as the fix for the first bug, typing could still drop or garble
+characters (`"hello world"` -> `"hello orld"` or `"hello ddddd"`) because
+`set_focus()` returns before focus has actually settled and `type_keys()`
+fired immediately after can lose its first keystroke(s) -- fixed with an
+explicit settling delay and inter-keystroke pause, verified with 5/5
+clean repeated attempts. `pip install
 pywinauto` to turn this arm on.
 
 ## Phase 2 design

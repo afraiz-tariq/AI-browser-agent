@@ -19,6 +19,7 @@ import pytest
 
 pytest.importorskip("pywinauto")
 
+import windows_tools  # noqa: E402
 from errors import TaskCannotBeCompleted  # noqa: E402
 from tool_provider import requires_confirmation  # noqa: E402
 from windows_tools import WindowsAutomationError, WindowsSession, WindowsToolProvider  # noqa: E402
@@ -174,13 +175,14 @@ def test_click_control_falls_back_to_click_input_when_invoke_unsupported():
     ctrl.click_input.assert_called_once()
 
 
-def test_type_into_control_prefers_type_keys_and_escapes_special_characters():
+def test_type_into_control_prefers_type_keys_and_escapes_special_characters(monkeypatch):
     # type_keys() (real simulated keystrokes) is the primary method -- NOT
     # set_edit_text (UIA's ValuePattern), which real-window testing against
     # a modern WinUI-based app found silently writes corrupted text (no
     # exception, just wrong content). type_keys interprets +^%~(){}[] as
     # keystroke-modifier syntax unless escaped, so literal text containing
     # them must come through escaped.
+    monkeypatch.setattr("windows_tools.time.sleep", lambda *a, **k: None)  # skip the real settling delay
     session = WindowsSession()
     ctrl = MagicMock()
     session._last_controls["Untitled - Notepad"] = [ctrl]
@@ -190,8 +192,24 @@ def test_type_into_control_prefers_type_keys_and_escapes_special_characters():
     )
 
     ctrl.set_focus.assert_called_once()
-    ctrl.type_keys.assert_called_once_with("hello {(}world{)}", with_spaces=True)
+    ctrl.type_keys.assert_called_once_with("hello {(}world{)}", with_spaces=True, pause=windows_tools._TYPE_KEYS_PAUSE_S)
     ctrl.set_edit_text.assert_not_called()
+
+
+def test_type_into_control_waits_for_focus_to_settle_before_typing(monkeypatch):
+    # Real-window testing found type_keys() firing immediately after
+    # set_focus() dropped/garbled the first character(s) typed -- see
+    # windows_tools.py's module docstring. A settling delay must happen
+    # between the two, not be skipped.
+    sleep_calls = []
+    monkeypatch.setattr("windows_tools.time.sleep", lambda s: sleep_calls.append(s))
+    session = WindowsSession()
+    ctrl = MagicMock()
+    session._last_controls["Untitled - Notepad"] = [ctrl]
+
+    session.execute("windows_type_into_control", {"window_title": "Untitled - Notepad", "index": 0, "text": "hi"})
+
+    assert sleep_calls == [windows_tools._FOCUS_SETTLE_DELAY_S]
 
 
 def test_type_into_control_falls_back_to_set_edit_text_when_type_keys_unsupported():

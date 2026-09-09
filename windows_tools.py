@@ -73,6 +73,7 @@ Two things found only by testing against real windows (Notepad, Calculator
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from browser import SENSITIVE_KEYWORDS as BROWSER_SENSITIVE_KEYWORDS
@@ -89,6 +90,16 @@ class WindowsAutomationError(Exception):
 # -- without this, literal text containing any of them would be silently
 # mangled. See _do_windows_type_into_control().
 _TYPE_KEYS_SPECIAL_CHARS = set("+^%~(){}[]")
+
+# set_focus() returns as soon as the focus CHANGE is requested, not once
+# the control has actually finished receiving it -- real-window testing
+# found type_keys() firing immediately after set_focus() dropped the first
+# character(s) typed ("hello world" -> "hello orld") on a fresh window, and
+# produced worse garbling/repeats ("hello world" -> "hello ddddd") on a
+# busier one. Both traced to this timing race and type_keys()'s default
+# keystroke rate, not the escaping logic -- see _do_windows_type_into_control().
+_FOCUS_SETTLE_DELAY_S = 0.15
+_TYPE_KEYS_PAUSE_S = 0.03
 
 
 def _escape_for_type_keys(text: str) -> str:
@@ -390,7 +401,11 @@ class WindowsSession:
             # keystroke-modifier syntax unless escaped, and would otherwise
             # silently mangle literal text containing them.
             ctrl.set_focus()
-            ctrl.type_keys(_escape_for_type_keys(text), with_spaces=True)
+            # See _FOCUS_SETTLE_DELAY_S/_TYPE_KEYS_PAUSE_S above -- without
+            # both of these, real-window testing found dropped/garbled
+            # characters even with the escaping already correct.
+            time.sleep(_FOCUS_SETTLE_DELAY_S)
+            ctrl.type_keys(_escape_for_type_keys(text), with_spaces=True, pause=_TYPE_KEYS_PAUSE_S)
         except Exception:
             # Fallback for a control that can't receive simulated keystrokes
             # (e.g. genuinely not focusable) but does support UIA's Value
