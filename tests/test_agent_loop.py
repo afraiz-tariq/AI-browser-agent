@@ -198,3 +198,29 @@ def test_repeated_action_is_detected_as_stuck(test_config, fixtures_server):
 
     assert outcome["success"] is False
     assert "repeated the same action" in outcome["result"]
+
+
+def test_scrolling_lets_the_model_read_past_the_initial_truncation(test_config, fixtures_server):
+    # End-to-end proof that browser.py's text-pagination fix (scroll now
+    # actually advances what observe() shows, instead of being a no-op for
+    # text extraction) is wired all the way through the real loop. Checks
+    # the actual prompts sent at each step (MockProvider.calls), not just
+    # that the scripted run completes -- a scripted "finish" can't by
+    # itself prove scrolling revealed anything real.
+    mock = MockProvider([
+        _reply("Navigating to the long page.", "goto", {"url": f"{fixtures_server}/long_page.html"}),
+        _reply("Text is truncated -- scrolling for more.", "scroll", {"direction": "down"}),
+        _reply("Still truncated -- scrolling again.", "scroll", {"direction": "down"}),
+        _reply("Found it.", "finish", {"summary": "The page's last segment is SEGMENT-23."}),
+    ])
+    llm_client = LLMClient(mock)
+
+    outcome = run_task("Find the last segment marker on the long page.", test_config, dry_run=True, llm_client=llm_client)
+
+    assert outcome["success"] is True
+    prompts = [user_prompt for _, user_prompt in mock.calls]
+    # prompts[0] is the very first decide call, made before "goto" has run
+    # (no browser page open yet); prompts[1] is the first real observation.
+    assert "SEGMENT-23" not in prompts[1]  # not visible before any scrolling
+    assert "SEGMENT-23" in prompts[-1]  # revealed after scrolling down twice
+    assert "more text than what's shown" in prompts[1].lower()  # told about the truncation up front

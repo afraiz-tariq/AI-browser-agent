@@ -87,6 +87,13 @@ class Observation:
     # changing the URL or any visible text -- which visible_text alone
     # can't see, since e.g. a checked checkbox usually renders no new text.
     state_fingerprint: str
+    # Whether `visible_text` is a partial window into a longer page (see
+    # BrowserSession.scroll()/observe()) -- surfaced to the model (see
+    # llm.py) so it never mistakes "not mentioned in what I've read so
+    # far" for "not on the page at all" on a long article/document/result
+    # list, and knows `scroll` will reveal the rest.
+    text_truncated: bool
+    total_text_length: int
 
 
 class BrowserSession:
@@ -99,6 +106,17 @@ class BrowserSession:
         self.context: BrowserContext | None = None
         self.page: Page | None = None
         self._last_elements: list = []  # Playwright ElementHandles, indexed like the observation
+        # Text pagination state -- see scroll()/observe(). A page's full
+        # inner_text is captured regardless of scroll position (Playwright
+        # doesn't limit it to the viewport), so without this, a page longer
+        # than max_chars would have its tail permanently unreachable: every
+        # observe() would re-slice the exact same first N characters no
+        # matter how much the model scrolled. This offset is what makes
+        # `scroll` actually page through the text, not just move the
+        # (invisible, in headless mode) viewport.
+        self._text_offset = 0
+        self._last_max_chars = 6000
+        self._observed_url: str | None = None
 
     def start(self) -> None:
         self._playwright = sync_playwright().start()
@@ -143,6 +161,11 @@ class BrowserSession:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
         self.page.goto(url, wait_until="domcontentloaded")
+        self._text_offset = 0  # a freshly navigated-to page is always read from the top
+
+    def go_back(self) -> None:
+        self.page.go_back(wait_until="domcontentloaded")
+        self._text_offset = 0
 
     def click(self, index: int) -> None:
         el = self._resolve(index)
@@ -160,9 +183,11 @@ class BrowserSession:
     def scroll(self, direction: str = "down") -> None:
         delta = 800 if direction == "down" else -800
         self.page.mouse.wheel(0, delta)
-
-    def go_back(self) -> None:
-        self.page.go_back(wait_until="domcontentloaded")
+        # Also page through the text window used by observe() -- see
+        # __init__'s comment on _text_offset. Advances by one "page" of
+        # text (whatever max_chars the last observe() used), clamped at 0
+        # so scrolling up at the top is a no-op rather than going negative.
+        self._text_offset = max(0, self._text_offset + (self._last_max_chars if direction == "down" else -self._last_max_chars))
 
     def wait(self, ms: int = 1000) -> None:
         self.page.wait_for_timeout(ms)
@@ -211,11 +236,31 @@ class BrowserSession:
 
         self._last_elements = kept_handles
 
+        # A fresh page (any navigation -- goto, a link click, a submitted
+        # form) always starts being read from the top; the offset only
+        # persists across observe() calls on the SAME page, which is what
+        # makes repeated `scroll` calls page forward through one long page's
+        # text instead of getting stuck wherever the previous page left off.
+        if self.page.url != self._observed_url:
+            self._text_offset = 0
+            self._observed_url = self.page.url
+
         try:
             body_text = self.page.inner_text("body")
         except Exception:
             body_text = ""
-        visible_text = " ".join(body_text.split())[:max_chars]
+        full_text = " ".join(body_text.split())
+        # Clamp so `scroll("down")` called one time too many lands exactly
+        # on the last page of text instead of sliding past the end into an
+        # empty string forever (Python slicing past the end of a string
+        # silently returns "" rather than raising) -- once here, further
+        # "scroll down" calls are harmless no-ops, matching a real scrollbar
+        # that simply stops at the bottom of the page.
+        max_offset = max(0, len(full_text) - max_chars)
+        self._text_offset = min(self._text_offset, max_offset)
+        visible_text = full_text[self._text_offset:self._text_offset + max_chars]
+        text_truncated = self._text_offset + len(visible_text) < len(full_text)
+        self._last_max_chars = max_chars
 
         page_signal = (self.page.url + " " + self.page.title() + " " + visible_text[:500]).lower()
         looks_like_login = any(phrase in page_signal for phrase in LOGIN_WALL_PHRASES)
@@ -229,6 +274,8 @@ class BrowserSession:
             visible_text=visible_text,
             looks_like_login=looks_like_login,
             state_fingerprint=state_fingerprint,
+            text_truncated=text_truncated,
+            total_text_length=len(full_text),
         )
 
     def element_summary(self, index: int) -> str:
@@ -287,7 +334,10 @@ BROWSER_ACTION_SPECS: dict[str, dict] = {
         "risk_level": "R0",
     },
     "scroll": {
-        "description": "Scroll the page up or down to reveal more content.",
+        "description": "Scroll down/up through the CURRENT page's visible text. Use this when the "
+                        "observation says the text is truncated -- it reveals the next (or previous) "
+                        "chunk on your following observation, letting you read a long page in full "
+                        "rather than only ever seeing its first few thousand characters.",
         "properties": {"direction": {"type": "string", "enum": ["up", "down"]}},
         "required": ["direction"],
         "risk_level": "R0",

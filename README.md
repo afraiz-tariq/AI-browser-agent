@@ -44,7 +44,13 @@ Concretely, each step of a task is:
 1. **Observe** -- if a browser page is open, `browser.py` asks Playwright
    for its URL, title, a numbered list of interactive elements (links,
    buttons, inputs -- using the DOM/accessibility tree, not a screenshot),
-   and a snippet of visible text. The Excel arm has no equivalent
+   and a chunk of visible text (`MAX_DOM_CHARS` characters, 6000 by
+   default). A page longer than that isn't truncated and forgotten --
+   `scroll` pages through the rest of the text on each following
+   observation (independent of any real visual scroll position), and the
+   model is told explicitly when there's more to read so it doesn't
+   answer from a partial page or conclude something is absent just
+   because it wasn't in the first chunk. The Excel arm has no equivalent
    "observe the whole environment" step -- its actions report their own
    result directly (see step 3).
 2. **Decide** -- `llm.py` sends the task, a short history of what's been

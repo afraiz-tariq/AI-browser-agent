@@ -60,6 +60,10 @@ Rules:
   why you're doing this. Keep it brief to save tokens.
 - Only use browser element indices that appear in the CURRENT observation.
   They change on every page, so never reuse an index from an earlier step.
+- A long page's visible text may be shown in chunks -- the observation
+  tells you when there's more (see VISIBLE TEXT). Use scroll to page
+  through the rest before answering; never conclude something is missing
+  from a page just because it wasn't in the first chunk you read.
 - excel_open must be called before any other excel_* action on a given
   file. excel_write_cell only changes the in-memory workbook -- call
   excel_save when all edits for the task are done, or they're lost.
@@ -242,6 +246,16 @@ class LLMClient:
                 f"[{el.index}] <{el.tag}{'/' + el.input_type if el.input_type else ''}> {el.text!r}"
                 for el in observation.elements
             ) or "(no interactive elements found)"
+            if observation.text_truncated:
+                shown = len(observation.visible_text)
+                text_label = (
+                    f"VISIBLE TEXT (showing {shown} of {observation.total_text_length} characters -- this page "
+                    "has MORE text than what's shown below. Do not conclude something is absent from the page "
+                    "just because it isn't in this excerpt -- call scroll(direction=\"down\") to read further "
+                    "before giving up or answering from partial text):"
+                )
+            else:
+                text_label = "VISIBLE TEXT:"
             obs_section = f"""OBSERVATION:
 URL: {observation.url}
 TITLE: {observation.title}
@@ -249,7 +263,7 @@ LOOKS LIKE LOGIN PAGE: {observation.looks_like_login}
 INTERACTIVE ELEMENTS:
 {elements_text}
 
-VISIBLE TEXT (truncated):
+{text_label}
 {observation.visible_text}"""
 
         user_prompt = f"""TASK: {task}

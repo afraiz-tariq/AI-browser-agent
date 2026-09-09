@@ -190,5 +190,100 @@ def test_observe_truncates_visible_text_to_max_chars(test_config, fixtures_serve
         session.goto(f"{fixtures_server}/results.html")
         obs = session.observe(max_chars=10)
         assert len(obs.visible_text) <= 10
+        assert obs.text_truncated is True
+        assert obs.total_text_length > 10
+    finally:
+        session.stop()
+
+
+def test_short_page_is_not_reported_as_truncated(test_config, fixtures_server):
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/index.html")
+        obs = session.observe()  # default max_chars is far larger than this fixture's text
+        assert obs.text_truncated is False
+        assert obs.total_text_length == len(obs.visible_text)
+    finally:
+        session.stop()
+
+
+def test_scroll_pages_through_a_long_pages_text(test_config, fixtures_server):
+    # Regression-shaped: previously `scroll` had zero effect on
+    # observe()'s visible_text (Playwright's inner_text() isn't limited to
+    # the viewport), so any page longer than max_chars had its tail
+    # permanently unreachable no matter how much the model "scrolled".
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/long_page.html")
+
+        first = session.observe(max_chars=2000)
+        assert "SEGMENT-00" in first.visible_text
+        assert "SEGMENT-23" not in first.visible_text  # the page's last segment, far beyond the first window
+        assert first.text_truncated is True
+
+        session.scroll("down")
+        second = session.observe(max_chars=2000)
+        assert "SEGMENT-00" not in second.visible_text  # scrolled past the start
+        assert second.visible_text != first.visible_text
+
+        # Scroll all the way to the end of a page that started out truncated.
+        for _ in range(6):
+            session.scroll("down")
+        last = session.observe(max_chars=2000)
+        assert "SEGMENT-23" in last.visible_text
+        assert last.text_truncated is False  # nothing left to page through
+    finally:
+        session.stop()
+
+
+def test_scroll_up_moves_back_toward_the_start(test_config, fixtures_server):
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/long_page.html")
+        session.observe(max_chars=2000)
+        session.scroll("down")
+        session.scroll("down")
+        session.observe(max_chars=2000)
+
+        session.scroll("up")
+        session.scroll("up")
+        back_at_start = session.observe(max_chars=2000)
+
+        assert "SEGMENT-00" in back_at_start.visible_text
+    finally:
+        session.stop()
+
+
+def test_scrolling_up_past_the_start_does_not_go_negative(test_config, fixtures_server):
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/long_page.html")
+        session.observe(max_chars=2000)
+        session.scroll("up")  # already at the top -- must clamp at 0, not go negative
+        obs = session.observe(max_chars=2000)
+        assert "SEGMENT-00" in obs.visible_text
+    finally:
+        session.stop()
+
+
+def test_navigating_to_a_new_page_resets_the_text_reading_position(test_config, fixtures_server):
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/long_page.html")
+        session.observe(max_chars=2000)
+        for _ in range(6):
+            session.scroll("down")
+        session.observe(max_chars=2000)  # now reading from deep in the page
+
+        session.goto(f"{fixtures_server}/index.html")
+        session.goto(f"{fixtures_server}/long_page.html")  # back to the same URL, but a fresh visit
+        fresh = session.observe(max_chars=2000)
+
+        assert "SEGMENT-00" in fresh.visible_text
     finally:
         session.stop()
