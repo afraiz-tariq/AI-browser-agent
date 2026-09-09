@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 182 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 188 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -189,23 +189,40 @@ Controls are addressed by index from the most recent `windows_list_controls`
 call for that window -- mirrors the browser arm's `observe()` ->
 `click(index)` pattern exactly, never a name/selector the model guesses.
 
-- `windows_launch_app(path, args)` -- R3.
+- `windows_launch_app(path, args)` -- R2.
 - `windows_list_windows()` -- R0.
 - `windows_list_controls(window_title)` -- R0. **Call this again after any
   click/type action, before reading a control affected by it** -- some
   apps replace a control's underlying element when its content changes
   (found on a calculator's result display after clicking `=`), so a
   reference from before the action can report stale, pre-action text.
-- `windows_click_control(window_title, index)` -- R3.
-- `windows_type_into_control(window_title, index, text)` -- R3.
+- `windows_click_control(window_title, index)` -- **dynamic**: R2 if the
+  target control's own text matches a sensitive-keyword list, R0 otherwise.
+- `windows_type_into_control(window_title, index, text)` -- R1.
 - `windows_read_control_text(window_title, index)` -- R0.
-- `windows_close_window(window_title)` -- R3.
+- `windows_close_window(window_title)` -- R2.
 
-Every mutating action is R3 (always confirms, not configurable off) --
-unlike the browser arm's per-click risk tiering, there's no DOM-equivalent
-ground truth here to justify treating any specific control as lower-risk.
-A launched app is deliberately left running when the task ends rather than
-force-closed, since that could destroy the user's unsaved work in it.
+Confirmation policy mirrors the browser arm's exactly, not a separate
+scheme: `windows_click_control`'s risk is decided by
+`WindowsToolProvider.get_dynamic_risk()`, the same mechanism
+`BrowserToolProvider.get_dynamic_risk()` uses via `is_sensitive()` --
+`windows_list_controls` already reads each control's real accessible text
+via UI Automation, the same kind of ground truth the DOM gives the browser
+arm, so a click only confirms when the target's own text matches a
+keyword list (browser.py's list plus Windows-relevant additions:
+`uninstall`, `format`, `erase`, `reset`, `wipe`, `shut down`, `restart`,
+`sign out`). `windows_type_into_control` is R1 (confirms only if
+`CONFIRM_R1_ACTIONS` is on) since typing is reversible -- the risk lives in
+whatever button gets pressed afterward. `windows_launch_app` and
+`windows_close_window` stay R2 (default-confirm, tunable off): there's no
+control-text signal to judge a whole-app-launch or whole-window-close by.
+This started as "every mutating action always confirms, not configurable
+off" -- the right conservative starting point before `windows_list_controls`
+existed to give real ground truth to judge risk by -- and was loosened
+once that ground truth existed, the same way the browser arm already
+worked. A launched app is deliberately left running when the task ends
+rather than force-closed, since that could destroy the user's unsaved
+work in it.
 
 Four things found only by testing against real windows -- some by isolated
 manual calls, others only by a full end-to-end run of the actual agent
@@ -241,10 +258,16 @@ The plan discussed for extending this beyond the browser:
   tool this same arm could grow if a real task needs it.
 - **Windows desktop automation** (implemented, see above). Scoped down
   exactly as originally decided: launch-app + list/click/type/read-controls
-  only, not general-purpose UI understanding, and every mutating action
-  always confirms (R3, not configurable off) rather than the browser arm's
-  opt-in keyword-matching -- a Windows arm's blast radius (other apps'
-  data, system dialogs) is bigger than a browser tab's.
+  only, not general-purpose UI understanding. Confirmation policy started
+  as "every mutating action always confirms, not configurable off" -- the
+  right conservative starting point before `windows_list_controls` existed
+  to give real ground truth to judge risk by -- and was loosened once that
+  ground truth existed: `windows_click_control` now uses the same dynamic,
+  control-text-based risk tiering as the browser arm's clicks (see
+  **Windows desktop automation arm** above), while `windows_launch_app`/
+  `windows_close_window` still default-confirm, since a whole-app-launch
+  or whole-window-close has no per-control text to judge risk by the way
+  a click does.
 - **Remote command interface** (implemented, see below) -- but as a
   **Discord bot** (`discord_bot.py`), not the local HTTP/LAN server
   originally sketched here. The bot makes an outbound connection to

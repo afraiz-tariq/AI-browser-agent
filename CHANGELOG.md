@@ -14,6 +14,25 @@ full commit message.
 
 ## 2026-09-09
 
+- Loosened the Windows automation arm's confirmation policy from "every
+  mutating action always confirms" to dynamic, content-aware risk --
+  mirroring the browser arm's existing pattern rather than inventing a new
+  one. `windows_click_control` now uses `WindowsToolProvider.
+  get_dynamic_risk()` (the same mechanism `BrowserToolProvider.
+  get_dynamic_risk()`/`is_sensitive()` uses): R2 only if the resolved
+  control's own UIA-read text matches a sensitive-keyword list
+  (browser.py's list plus Windows-specific additions like `uninstall`/
+  `format`/`shut down`), R0 otherwise. `windows_type_into_control` moved to
+  R1 (confirms only with `CONFIRM_R1_ACTIONS` on -- typing is reversible,
+  the risk is in whatever button gets pressed after). `windows_launch_app`
+  moved to R2 (default-confirm, tunable off, was unconditional R3).
+  `windows_close_window` stays R2 (no per-control text to judge a whole-
+  window close by). This was possible once `windows_list_controls`
+  existed to give real ground truth to judge risk by -- the same kind the
+  DOM already gave the browser arm -- which didn't exist when the arm was
+  first scoped as "confirm everything." 6 new tests for the dynamic-risk
+  logic; verified live that Calculator's digit/operator clicks no longer
+  prompt while a control with a sensitive-sounding name still does.
 - Added Windows desktop automation as a fourth `ToolProvider` arm
   (`windows_tools.py`, via pywinauto's UI Automation backend), scoped down
   exactly as the design decision recorded for it called for: launch-app +

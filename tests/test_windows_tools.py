@@ -1,8 +1,8 @@
 """
 Unit tests for the Windows desktop automation arm (windows_tools.py),
-without needing a live GUI window: tool spec shape, R0/R3 risk
-classification, index-out-of-range handling, and the pywinauto call chain
-mocked at the object level (not a real window).
+without needing a live GUI window: tool spec shape, static and dynamic
+(control-text-based) risk classification, index-out-of-range handling, and
+the pywinauto call chain mocked at the object level (not a real window).
 
 Requires the optional `pywinauto` package (see requirements.txt) --
 skipped entirely if it isn't installed, since this is an opt-in arm
@@ -30,17 +30,26 @@ class _FakeConfig:
         self.confirm_r1_actions = confirm_r1_actions
 
 
-def test_get_tool_specs_returns_seven_actions_with_expected_risk_tiers():
+def test_get_tool_specs_returns_seven_actions_with_expected_static_risk_tiers():
+    # windows_click_control's static tier is R0 -- its real risk is dynamic
+    # (see get_dynamic_risk() tests below), mirroring browser.py's click.
     specs = {s.name: s for s in WindowsToolProvider(WindowsSession()).get_tool_specs()}
     assert set(specs) == {
         "windows_launch_app", "windows_list_windows", "windows_list_controls",
         "windows_click_control", "windows_type_into_control", "windows_read_control_text",
         "windows_close_window",
     }
-    r0_actions = {"windows_list_windows", "windows_list_controls", "windows_read_control_text"}
-    for name, spec in specs.items():
-        expected = "R0" if name in r0_actions else "R3"
-        assert spec.risk_level == expected, f"{name} expected {expected}, got {spec.risk_level}"
+    expected_tiers = {
+        "windows_launch_app": "R2",
+        "windows_list_windows": "R0",
+        "windows_list_controls": "R0",
+        "windows_click_control": "R0",
+        "windows_type_into_control": "R1",
+        "windows_read_control_text": "R0",
+        "windows_close_window": "R2",
+    }
+    for name, expected in expected_tiers.items():
+        assert specs[name].risk_level == expected, f"{name} expected {expected}, got {specs[name].risk_level}"
 
 
 def test_r3_actions_always_confirm_even_with_confirmation_flags_off():
@@ -54,6 +63,75 @@ def test_r3_actions_always_confirm_even_with_confirmation_flags_off():
 def test_r0_actions_never_confirm_even_with_confirmation_flags_on():
     config = _FakeConfig(confirm_sensitive_actions=True, confirm_r1_actions=True)
     assert requires_confirmation("R0", config) is False
+
+
+def test_get_control_text_returns_the_controls_accessible_text():
+    session = WindowsSession()
+    ctrl = MagicMock()
+    ctrl.window_text.return_value = "Delete"
+    session._last_controls["Untitled - Notepad"] = [ctrl]
+
+    assert session.get_control_text("Untitled - Notepad", 0) == "Delete"
+
+
+def test_get_control_text_returns_empty_string_when_not_resolvable():
+    # Deliberately forgiving (unlike _resolve_control, used by the actual
+    # click/type/read actions, which raises) -- a risk check that can't
+    # determine the text should fall through to the static tier, not blow
+    # up the whole dispatch. See get_control_text()'s docstring.
+    session = WindowsSession()
+    assert session.get_control_text("No Such Window", 0) == ""
+
+    session._last_controls["Untitled - Notepad"] = [MagicMock()]
+    assert session.get_control_text("Untitled - Notepad", 5) == ""  # out of range
+
+
+def test_get_dynamic_risk_escalates_click_on_a_sensitive_control():
+    # The positive case: a control whose own text matches the sensitive-
+    # keyword list must escalate to R2, the same mechanism browser.py's
+    # BrowserToolProvider.get_dynamic_risk() uses via is_sensitive().
+    session = WindowsSession()
+    ctrl = MagicMock()
+    ctrl.window_text.return_value = "Delete Account"
+    session._last_controls["Settings"] = [ctrl]
+    provider = WindowsToolProvider(session)
+
+    risk = provider.get_dynamic_risk("windows_click_control", {"window_title": "Settings", "index": 0})
+
+    assert risk == "R2"
+
+
+def test_get_dynamic_risk_leaves_an_ordinary_control_at_the_static_tier():
+    session = WindowsSession()
+    ctrl = MagicMock()
+    ctrl.window_text.return_value = "Seven"
+    session._last_controls["Calculator"] = [ctrl]
+    provider = WindowsToolProvider(session)
+
+    risk = provider.get_dynamic_risk("windows_click_control", {"window_title": "Calculator", "index": 0})
+
+    assert risk is None  # falls through to windows_click_control's static R0
+
+
+def test_get_dynamic_risk_detects_a_windows_specific_keyword_not_in_browsers_list():
+    session = WindowsSession()
+    ctrl = MagicMock()
+    ctrl.window_text.return_value = "Uninstall"
+    session._last_controls["Programs and Features"] = [ctrl]
+    provider = WindowsToolProvider(session)
+
+    risk = provider.get_dynamic_risk(
+        "windows_click_control", {"window_title": "Programs and Features", "index": 0}
+    )
+
+    assert risk == "R2"
+
+
+def test_get_dynamic_risk_returns_none_for_non_click_actions():
+    provider = WindowsToolProvider(WindowsSession())
+    assert provider.get_dynamic_risk("windows_type_into_control", {"window_title": "x", "index": 0}) is None
+    assert provider.get_dynamic_risk("windows_launch_app", {"path": "notepad.exe"}) is None
+    assert provider.get_dynamic_risk("windows_close_window", {"window_title": "x"}) is None
 
 
 def test_click_control_before_list_controls_raises_clear_error():

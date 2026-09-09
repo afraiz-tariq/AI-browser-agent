@@ -7,16 +7,25 @@ coordinate clicking (e.g. pyautogui).
 Deliberately narrow scope, per ARCHITECTURE_DECISIONS.md section 5's
 recorded decision ("Windows desktop automation (general): far more
 open-ended/brittle than browser (DOM) or Excel (file format); scope down to
-launch-app + known-dialogs only ... with default-confirm on every action,
-not opt-in like the browser arm"). Two things follow from that directly:
+launch-app + known-dialogs only"). Two things follow from that:
 
-1. Every mutating action is R3 (always confirms -- see tool_provider.py's
-   requires_confirmation(), which makes R3 non-configurable). Only reads
-   (windows_list_windows, windows_list_controls, windows_read_control_text)
-   are R0. Unlike the browser arm, there's no dynamic per-argument risk
-   tiering here (no windows-arm equivalent of "this click target's text
-   looks like a submit button") -- there's no DOM-equivalent ground truth
-   to justify treating any specific control as lower-risk.
+1. Confirmation policy mirrors the browser arm's, not a new pattern:
+   windows_click_control's risk is DYNAMIC (WindowsToolProvider.
+   get_dynamic_risk()), the same mechanism as BrowserToolProvider.
+   get_dynamic_risk() checking is_sensitive() -- windows_list_controls
+   already reads each control's real accessible text via UI Automation,
+   the same kind of ground truth the DOM gives the browser arm, so a click
+   only confirms (R2) when the target control's own text matches a
+   sensitive-keyword list (SENSITIVE_KEYWORDS below, browser.py's list
+   extended with Windows-relevant destructive actions); otherwise R0, no
+   confirmation. windows_type_into_control is R1 (confirms only if
+   CONFIRM_R1_ACTIONS is on) -- typing itself is reversible, the risk lives
+   in whatever button gets pressed afterward, same reasoning as the browser
+   arm's `type` action without submit=True. windows_launch_app is R2
+   (confirms by default, tunable off). windows_close_window stays R2 --
+   there's no control-text signal to judge a whole-window close by, so it
+   keeps a default-yes confirm. See WINDOWS_ACTION_SPECS and
+   WindowsToolProvider.get_dynamic_risk() below.
 2. Controls are addressed by index from the most recent windows_list_controls
    call for that window, never a name/selector the model guesses -- mirrors
    browser.py's observe() -> click(index)/type(index, ...) pattern exactly.
@@ -66,8 +75,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from browser import SENSITIVE_KEYWORDS as BROWSER_SENSITIVE_KEYWORDS
 from errors import TaskCannotBeCompleted, explain
-from tool_provider import ToolProvider, ToolSpec
+from tool_provider import RiskLevel, ToolProvider, ToolSpec
 
 
 class WindowsAutomationError(Exception):
@@ -85,9 +95,23 @@ def _escape_for_type_keys(text: str) -> str:
     return "".join(f"{{{c}}}" if c in _TYPE_KEYS_SPECIAL_CHARS else c for c in text)
 
 
+# Extends browser.py's SENSITIVE_KEYWORDS (submit/buy/delete/...) with
+# Windows-relevant destructive-sounding actions that wouldn't naturally
+# appear in a web page's button text -- used by
+# WindowsToolProvider.get_dynamic_risk() the same way browser.py's
+# is_sensitive() uses its own list.
+WINDOWS_EXTRA_SENSITIVE_KEYWORDS = (
+    "uninstall", "format", "erase", "reset", "wipe", "shut down", "restart", "sign out",
+)
+SENSITIVE_KEYWORDS = BROWSER_SENSITIVE_KEYWORDS + WINDOWS_EXTRA_SENSITIVE_KEYWORDS
+
+
 # Registered into llm.py's flat tool list alongside the other arms' specs --
-# see WindowsToolProvider.get_tool_specs(). Every mutating action is R3 on
-# purpose (see module docstring); only the three pure reads are R0.
+# see WindowsToolProvider.get_tool_specs(). risk_level here is the STATIC/
+# base tier; windows_click_control starts at R0 and gets escalated at call
+# time by get_dynamic_risk() below (mirrors browser.py's BROWSER_ACTION_SPECS
+# comment for the exact same reason: its real risk depends on the target
+# control's own text, not the tool name alone). See module docstring.
 WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
     "windows_launch_app": {
         "description": "Launch a Windows application. Use this (or windows_list_windows to find an "
@@ -97,7 +121,7 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
             "args": {"type": "string", "description": "Optional command-line arguments."},
         },
         "required": ["path"],
-        "risk_level": "R3",
+        "risk_level": "R2",
     },
     "windows_list_windows": {
         "description": "List the titles of currently open top-level windows.",
@@ -137,7 +161,7 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
             "index": {"type": "integer", "description": "Control index from the most recent windows_list_controls."},
         },
         "required": ["window_title", "index"],
-        "risk_level": "R3",
+        "risk_level": "R0",
     },
     "windows_type_into_control": {
         "description": "Type text into a control by index from the most recent windows_list_controls call.",
@@ -151,7 +175,7 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
             "text": {"type": "string", "description": "Text to type into the control."},
         },
         "required": ["window_title", "index", "text"],
-        "risk_level": "R3",
+        "risk_level": "R1",
     },
     "windows_read_control_text": {
         "description": "Read the current text/value of a control by index from the most recent "
@@ -178,7 +202,7 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
             },
         },
         "required": ["window_title"],
-        "risk_level": "R3",
+        "risk_level": "R2",
     },
 }
 
@@ -304,6 +328,27 @@ class WindowsSession:
             )
         return controls[index]
 
+    def get_control_text(self, window_title: str, index: int) -> str:
+        """
+        Best-effort accessible text of a control, for risk classification
+        (see WindowsToolProvider.get_dynamic_risk()) -- returns "" rather
+        than raising if the control can't be resolved (not listed yet, bad
+        index, or the UIA call itself fails), since a risk check that can't
+        determine the text should fall through to the static risk tier, not
+        blow up the whole dispatch. Actual execution (_do_windows_click_control)
+        still uses _resolve_control(), which DOES raise a clear error on a
+        bad index -- this method is deliberately more forgiving, matching
+        browser.py's is_sensitive()/element_summary() same graceful-
+        degradation shape.
+        """
+        controls = self._last_controls.get(window_title)
+        if not controls or not (0 <= index < len(controls)):
+            return ""
+        try:
+            return controls[index].window_text() or ""
+        except Exception:
+            return ""
+
     def _do_windows_click_control(self, args: dict) -> str:
         window_title = args["window_title"]
         index = int(args["index"])
@@ -422,9 +467,24 @@ class WindowsToolProvider(ToolProvider):
     def execute(self, name: str, args: dict) -> str | None:
         return self.session.execute(name, args)
 
-    # get_dynamic_risk(), verify(), wants_verification() all use
-    # ToolProvider's defaults -- every action's risk is fully determined by
-    # its static risk_level (see module docstring point 1), and there's no
-    # "observe the whole window every step" equivalent for VERIFY to check
-    # against; each action already reports its own result directly, same as
-    # the Excel arm.
+    def get_dynamic_risk(self, name: str, args: dict) -> RiskLevel | None:
+        # Mirrors BrowserToolProvider.get_dynamic_risk() exactly: only
+        # windows_click_control's risk depends on its target (the resolved
+        # control's own accessible text, the UIA-backed equivalent of a
+        # button's visible label) -- windows_type_into_control and
+        # windows_launch_app/windows_close_window get their risk entirely
+        # from their static risk_level in WINDOWS_ACTION_SPECS, so this
+        # returns None for them (falls through to that static tier).
+        if name == "windows_click_control":
+            window_title = args.get("window_title")
+            index = args.get("index")
+            if window_title is not None and index is not None:
+                text = self.session.get_control_text(window_title, int(index)).lower()
+                if any(keyword in text for keyword in SENSITIVE_KEYWORDS):
+                    return "R2"
+        return None
+
+    # verify() and wants_verification() use ToolProvider's defaults --
+    # there's no "observe the whole window every step" equivalent for
+    # VERIFY to check against; each action already reports its own result
+    # directly, same as the Excel arm.
