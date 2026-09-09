@@ -11,7 +11,9 @@ bot.
 arms are built and validated with real end-to-end runs. Every arm
 implements a common `ToolProvider` contract (see **Architecture** below)
 with a four-tier risk model (R0 read-only through R3 always-confirm)
-governing which actions ask for `[y/n]` confirmation before running. 185
+governing which actions ask for `[y/n]` confirmation before running. Every
+real LLM call's token usage (input/output) is tracked per task and surfaced
+in both the structured output record and `LLMClient.get_usage()`. 189
 automated tests, fully offline. Windows desktop automation is scoped (see
 **Explicitly deferred** in `ARCHITECTURE_DECISIONS.md`) but deliberately
 not built here -- it needs a real Windows GUI to test against, which this

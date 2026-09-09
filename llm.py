@@ -126,6 +126,24 @@ def _openai_tools(tool_specs: list[ToolSpec]) -> list[dict[str, Any]]:
 
 
 class BaseLLMProvider(ABC):
+    def __init__(self) -> None:
+        # Token usage across every decide() call made through this provider
+        # instance -- one instance lives for the whole task, so this is a
+        # per-task running total. Real providers update it from the SDK
+        # response's own usage block; MockProvider never touches it, so it
+        # stays {0, 0} for scripted/offline runs, which is the honest answer
+        # (no real tokens were spent). Surfaced via LLMClient.get_usage()
+        # for the structured output record (see agent.py's _save_output)
+        # and the eval harness (evals/run_evals.py) -- "token usage, cost"
+        # is one of the eval dimensions a real eval suite needs, and
+        # nothing tracked this before.
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+
+    def _record_usage(self, input_tokens: int | None, output_tokens: int | None) -> None:
+        self.total_input_tokens += input_tokens or 0
+        self.total_output_tokens += output_tokens or 0
+
     @abstractmethod
     def decide(self, system: str, user: str) -> dict[str, Any]:
         """Send one turn and return {"action": ..., "thought": ..., "args": {...}}."""
@@ -133,6 +151,7 @@ class BaseLLMProvider(ABC):
 
 class OpenAIProvider(BaseLLMProvider):
     def __init__(self, api_key: str, model: str, tool_specs: list[ToolSpec]):
+        super().__init__()
         from openai import OpenAI  # imported lazily so `mock`/tests don't need the package configured
 
         self._client = OpenAI(api_key=api_key)
@@ -154,6 +173,9 @@ class OpenAIProvider(BaseLLMProvider):
         except Exception as e:  # network errors, auth errors, rate limits, etc.
             raise LLMError(f"OpenAI request failed: {e}") from e
 
+        if response.usage is not None:
+            self._record_usage(response.usage.prompt_tokens, response.usage.completion_tokens)
+
         tool_calls = response.choices[0].message.tool_calls or []
         if not tool_calls:
             raise LLMError("Model did not call a tool.")
@@ -168,6 +190,7 @@ class OpenAIProvider(BaseLLMProvider):
 
 class AnthropicProvider(BaseLLMProvider):
     def __init__(self, api_key: str, model: str, tool_specs: list[ToolSpec]):
+        super().__init__()
         import anthropic  # imported lazily, same reasoning as above
 
         self._client = anthropic.Anthropic(api_key=api_key)
@@ -186,6 +209,9 @@ class AnthropicProvider(BaseLLMProvider):
             )
         except Exception as e:
             raise LLMError(f"Anthropic request failed: {e}") from e
+
+        if response.usage is not None:
+            self._record_usage(response.usage.input_tokens, response.usage.output_tokens)
 
         for block in response.content:
             if block.type == "tool_use":
@@ -208,6 +234,7 @@ class MockProvider(BaseLLMProvider):
     """
 
     def __init__(self, scripted_replies: list[dict[str, Any] | str] | None = None):
+        super().__init__()
         self._replies = list(scripted_replies or [])
         self.calls: list[tuple[str, str]] = []
 
@@ -232,6 +259,15 @@ class LLMClient:
         if config.llm_provider == "mock":
             return cls(MockProvider())
         raise LLMError(f"Unknown LLM_PROVIDER: {config.llm_provider}")
+
+    def get_usage(self) -> dict[str, int]:
+        """Token usage accumulated across every decide() call made through
+        this client so far this task. {0, 0} for MockProvider -- no real
+        tokens were spent, which is the honest answer, not a missing one."""
+        return {
+            "input_tokens": self._provider.total_input_tokens,
+            "output_tokens": self._provider.total_output_tokens,
+        }
 
     def decide_next_action(self, task: str, history: list[str], observation) -> dict[str, Any]:
         history_text = "\n".join(f"- {h}" for h in history[-8:]) or "(none yet, this is the first step)"

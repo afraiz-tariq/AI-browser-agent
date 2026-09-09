@@ -38,6 +38,10 @@ def test_successful_task_writes_a_structured_record_with_artifacts(test_config, 
     assert {"type": "excel_file_saved", "path": str(xlsx_path)} in record["artifacts"]
     assert record["verification_warnings"] == []
     assert "saved_at" in record
+    # MockProvider never touches token counters -- {0, 0} is the honest
+    # answer for a scripted run, not a missing one (see llm.py's
+    # BaseLLMProvider and LLMClient.get_usage()).
+    assert record["token_usage"] == {"input_tokens": 0, "output_tokens": 0}
 
 
 def test_failed_task_also_writes_a_structured_record(test_config, fixtures_server, monkeypatch):
@@ -59,3 +63,4 @@ def test_failed_task_also_writes_a_structured_record(test_config, fixtures_serve
     # The goto that ran before the declined click still shows up as a
     # touched artifact, even though the task ultimately failed.
     assert {"type": "url_visited", "url": f"{fixtures_server}/sensitive_button.html"} in record["artifacts"]
+    assert record["token_usage"] == {"input_tokens": 0, "output_tokens": 0}

@@ -422,6 +422,11 @@ def run_task(
         steps_taken=steps_taken,
         artifacts=artifacts,
         verification_warnings=verification_warnings,
+        # llm can still be None if provider/tool-spec construction itself
+        # raised before it was ever assigned (e.g. an MCP server failed to
+        # start) -- no LLM calls happened in that case, so {0, 0} is the
+        # honest answer, not a missing one.
+        token_usage=llm.get_usage() if llm is not None else {"input_tokens": 0, "output_tokens": 0},
     )
 
     if error_message:
@@ -481,6 +486,7 @@ def _dispatch_action(
 
 def _save_output(
     task: str, status: str, summary: str, steps_taken: int, artifacts: list[dict], verification_warnings: list[str],
+    token_usage: dict[str, int],
 ) -> Path:
     """
     Structured result contract (ARCHITECTURE_DECISIONS.md section 4):
@@ -488,7 +494,10 @@ def _save_output(
     before -- so output/ is a full audit trail of what the agent actually
     did, not only a record of what it said at the end. `summary` is the
     final answer on success, or the same human-readable explanation
-    returned as outcome["result"] on failure.
+    returned as outcome["result"] on failure. `token_usage` is
+    {"input_tokens", "output_tokens"} accumulated across every real LLM
+    call this task made (see LLMClient.get_usage()) -- {0, 0} for a
+    MockProvider-driven run, which is accurate, not a placeholder.
     """
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     path = OUTPUT_DIR / f"{stamp}.json"
@@ -499,6 +508,7 @@ def _save_output(
         "steps_taken": steps_taken,
         "artifacts": artifacts,
         "verification_warnings": verification_warnings,
+        "token_usage": token_usage,
         "saved_at": datetime.now().isoformat(),
     }
     path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")

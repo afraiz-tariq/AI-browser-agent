@@ -27,8 +27,10 @@ def _provider():
     return AnthropicProvider(api_key="test-key", model="claude-test", tool_specs=SOME_TOOL_SPECS)
 
 
-def _response(*blocks):
-    return SimpleNamespace(content=list(blocks))
+def _response(*blocks, input_tokens=10, output_tokens=5):
+    return SimpleNamespace(
+        content=list(blocks), usage=SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens),
+    )
 
 
 def _text_block(text):
@@ -95,3 +97,24 @@ def test_missing_thought_defaults_to_empty_string():
 
     assert result["thought"] == ""
     assert result["args"] == {"direction": "down"}
+
+
+def test_token_usage_accumulates_across_multiple_decide_calls():
+    provider = _provider()
+    provider._client.messages.create = lambda **kwargs: _response(
+        _tool_use_block("wait", {}), input_tokens=100, output_tokens=20,
+    )
+    provider.decide("system prompt", "user prompt")
+    provider._client.messages.create = lambda **kwargs: _response(
+        _tool_use_block("wait", {}), input_tokens=150, output_tokens=30,
+    )
+    provider.decide("system prompt", "user prompt")
+
+    assert provider.total_input_tokens == 250
+    assert provider.total_output_tokens == 50
+
+
+def test_token_usage_starts_at_zero_before_any_call():
+    provider = _provider()
+    assert provider.total_input_tokens == 0
+    assert provider.total_output_tokens == 0

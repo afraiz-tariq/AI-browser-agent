@@ -24,9 +24,12 @@ def _provider():
     return OpenAIProvider(api_key="test-key", model="gpt-test", tool_specs=SOME_TOOL_SPECS)
 
 
-def _response(tool_calls):
+def _response(tool_calls, prompt_tokens=10, completion_tokens=5):
     message = SimpleNamespace(tool_calls=tool_calls)
-    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=message)],
+        usage=SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens),
+    )
 
 
 def _tool_call(name, arguments_dict_or_str):
@@ -91,3 +94,24 @@ def test_wraps_api_errors_as_llm_error():
 
     with pytest.raises(LLMError, match="OpenAI request failed"):
         provider.decide("system prompt", "user prompt")
+
+
+def test_token_usage_accumulates_across_multiple_decide_calls():
+    provider = _provider()
+    provider._client.chat.completions.create = lambda **kwargs: _response(
+        [_tool_call("wait", {})], prompt_tokens=100, completion_tokens=20,
+    )
+    provider.decide("system prompt", "user prompt")
+    provider._client.chat.completions.create = lambda **kwargs: _response(
+        [_tool_call("wait", {})], prompt_tokens=150, completion_tokens=30,
+    )
+    provider.decide("system prompt", "user prompt")
+
+    assert provider.total_input_tokens == 250
+    assert provider.total_output_tokens == 50
+
+
+def test_token_usage_starts_at_zero_before_any_call():
+    provider = _provider()
+    assert provider.total_input_tokens == 0
+    assert provider.total_output_tokens == 0
