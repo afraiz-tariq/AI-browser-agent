@@ -35,6 +35,7 @@ from llm import LLMClient, LLMError
 from logger import TaskLogger
 from mcp_tools import MCPToolProvider, build_brave_search_provider, build_fetch_provider, build_filesystem_provider
 from tool_provider import ToolProvider, ToolSpec, requires_confirmation
+from windows_tools import WindowsSession, WindowsToolProvider
 
 
 def ask_confirmation(prompt: str) -> bool:
@@ -153,6 +154,11 @@ def run_task(
         if config.enable_mcp_filesystem:
             mcp_providers.append(build_filesystem_provider(config))
         providers.extend(mcp_providers)
+        if config.enable_windows_automation:
+            # No subprocess/thread of its own (unlike the MCP arms above),
+            # so no close()/cleanup path is needed in the finally below --
+            # see WindowsSession's docstring.
+            providers.append(WindowsToolProvider(WindowsSession()))
 
         tool_specs: list[ToolSpec] = []
         tool_owner: dict[str, ToolProvider] = {}

@@ -2,24 +2,21 @@
 
 A small, local, personal AI agent that reads a plain-English task, uses an
 LLM to decide what to do, and acts on it through one or more "arms" --
-Chrome (via Playwright), Excel (via openpyxl), and three optional MCP-based
-arms (web fetch, Brave Search, local filesystem read access) -- until the
-task is done. Controllable from the command line or remotely via a Discord
-bot.
+Chrome (via Playwright), Excel (via openpyxl), three optional MCP-based
+arms (web fetch, Brave Search, local filesystem read access), and Windows
+desktop automation (via pywinauto, opt-in) -- until the task is done.
+Controllable from the command line or remotely via a Discord bot.
 
-**Status:** the browser and Excel arms, the Discord bot, and all three MCP
-arms are built and validated with real end-to-end runs. Every arm
-implements a common `ToolProvider` contract (see **Architecture** below)
-with a four-tier risk model (R0 read-only through R3 always-confirm)
-governing which actions ask for `[y/n]` confirmation before running. Every
-real LLM call's token usage (input/output) is tracked per task and surfaced
-in both the structured output record and `LLMClient.get_usage()`. 193
-automated tests, fully offline, plus a separate eval suite (`evals/`) that
-runs representative tasks against a real configured LLM and scores what
-the agent actually did. Windows desktop automation is scoped (see
-**Explicitly deferred** in `ARCHITECTURE_DECISIONS.md`) but deliberately
-not built here -- it needs a real Windows GUI to test against, which this
-development environment doesn't have.
+**Status:** the browser and Excel arms, the Discord bot, all three MCP
+arms, and the Windows desktop automation arm are built and validated with
+real end-to-end runs. Every arm implements a common `ToolProvider` contract
+(see **Architecture** below) with a four-tier risk model (R0 read-only
+through R3 always-confirm) governing which actions ask for `[y/n]`
+confirmation before running. Every real LLM call's token usage (input/
+output) is tracked per task and surfaced in both the structured output
+record and `LLMClient.get_usage()`. 180 automated tests, fully offline,
+plus a separate eval suite (`evals/`) that runs representative tasks
+against a real configured LLM and scores what the agent actually did.
 
 ## Architecture
 
@@ -33,19 +30,19 @@ User (CLI prompt, or a Discord DM via discord_bot.py)
    agent.py                    <- the observe/decide/act/verify loop lives here
         |
         v
-     llm.py  <-------------------------------------------+
-        |  (one flat list of tools from EVERY arm the      |
-        |   task has enabled; the model picks exactly one) |
-        v                                                   |
-   ┌────────┬──────────┬─────────────────────────┐          |
-   v        v          v                         v          |
-browser.py  excel_tools.py               mcp_tools.py (optional, per-arm opt-in)
-   |          |             ┌────────────┼────────────┐
-Playwright  openpyxl        v            v            v
-   |          |          fetch      Brave Search  filesystem
-Chrome --> Website     (web page)  (web search)  (one local folder)
-   |                       |            |             |
-   +---------- result / observation -----------------------+
+     llm.py  <-------------------------------------------------------+
+        |  (one flat list of tools from EVERY arm the task has         |
+        |   enabled; the model picks exactly one)                     |
+        v                                                               |
+   ┌────────┬──────────┬─────────────────────────┬──────────────┐      |
+   v        v          v                         v              v      |
+browser.py  excel_tools.py               mcp_tools.py       windows_tools.py
+   |          |             ┌────────────┼────────────┐    (optional, opt-in)
+Playwright  openpyxl        v            v            v          |
+   |          |          fetch      Brave Search  filesystem   pywinauto
+Chrome --> Website     (web page)  (web search)  (one local folder)  |
+   |                       |            |             |          any Windows app
+   +---------- result / observation ----------------------------------+
 ```
 
 Every arm implements the same `ToolProvider` contract (`tool_provider.py`)
@@ -176,6 +173,53 @@ environment variable passed to just that subprocess (`MCPToolProvider`'s
 `env` argument), not a CLI argument that would show up in a local process
 listing.
 
+### Windows desktop automation arm (optional, off by default)
+
+A fourth arm, `windows_tools.py`, drives Windows applications via
+[pywinauto](https://pywinauto.readthedocs.io/)'s UI Automation backend
+(`backend="uia"`) -- a real accessibility tree, the same reliability class
+as Playwright reading the DOM, not blind pixel/coordinate clicking. Off by
+default (`ENABLE_WINDOWS_AUTOMATION=false`); Windows-only, and `config.py`
+refuses to start a task with it enabled on any other OS.
+
+Deliberately narrow scope, per the design decision this implements (see
+`ARCHITECTURE_DECISIONS.md`): launch-app + list/click/type/read-controls
+only, not a general "understand and control any Windows app" tool.
+Controls are addressed by index from the most recent `windows_list_controls`
+call for that window -- mirrors the browser arm's `observe()` ->
+`click(index)` pattern exactly, never a name/selector the model guesses.
+
+- `windows_launch_app(path, args)` -- R3.
+- `windows_list_windows()` -- R0.
+- `windows_list_controls(window_title)` -- R0. **Call this again after any
+  click/type action, before reading a control affected by it** -- some
+  apps replace a control's underlying element when its content changes
+  (found on a calculator's result display after clicking `=`), so a
+  reference from before the action can report stale, pre-action text.
+- `windows_click_control(window_title, index)` -- R3.
+- `windows_type_into_control(window_title, index, text)` -- R3.
+- `windows_read_control_text(window_title, index)` -- R0.
+- `windows_close_window(window_title)` -- R3.
+
+Every mutating action is R3 (always confirms, not configurable off) --
+unlike the browser arm's per-click risk tiering, there's no DOM-equivalent
+ground truth here to justify treating any specific control as lower-risk.
+A launched app is deliberately left running when the task ends rather than
+force-closed, since that could destroy the user's unsaved work in it.
+
+Three things found only by testing against real windows -- two by isolated
+manual calls, one only by a full end-to-end run of the actual agent loop --
+not from pywinauto's docs alone (see `windows_tools.py`'s module docstring
+and `CHANGELOG.md`): typing via UIA's `ValuePattern` (`set_edit_text`)
+silently wrote corrupted text into a modern WinUI-based app's control with
+no exception raised, so `type_keys()` (real simulated keystrokes) is the
+primary method instead; the stale-control-reference issue documented
+above; and clicking via `click_input()` (real synthetic mouse input at
+screen coordinates) silently did nothing whenever another window had focus
+between LLM-driven steps -- exactly the "blind pixel/coordinate clicking"
+this arm is meant to avoid -- so `invoke()` (UIA's InvokePattern) is the
+primary click method instead. `pip install pywinauto` to turn this arm on.
+
 ## Phase 2 design
 
 The plan discussed for extending this beyond the browser:
@@ -188,17 +232,12 @@ The plan discussed for extending this beyond the browser:
   reading a workbook the user already has open live in Excel is a
   deliberate scope cut, not forgotten -- it would be a second, separate
   tool this same arm could grow if a real task needs it.
-- **Windows desktop automation is scoped down and comes later, not next.**
-  General "understand and click any button in any Windows app" is far
-  more open-ended and brittle than either the browser (a real DOM) or
-  Excel (a real file format) -- there's no accessibility-tree equivalent
-  as reliable as either. When it's built, it should start narrow (launch
-  an app, handle known dialogs like Open/Save) rather than aiming for
-  general-purpose UI understanding, and its `[y/n]` confirmation gate
-  should probably default to *every* action needing confirmation (opt-out
-  for a short allowlist), not the browser arm's opt-in keyword-matching --
-  a Windows arm's blast radius (other apps' data, system dialogs) is
-  bigger than a browser tab's.
+- **Windows desktop automation** (implemented, see above). Scoped down
+  exactly as originally decided: launch-app + list/click/type/read-controls
+  only, not general-purpose UI understanding, and every mutating action
+  always confirms (R3, not configurable off) rather than the browser arm's
+  opt-in keyword-matching -- a Windows arm's blast radius (other apps'
+  data, system dialogs) is bigger than a browser tab's.
 - **Remote command interface** (implemented, see below) -- but as a
   **Discord bot** (`discord_bot.py`), not the local HTTP/LAN server
   originally sketched here. The bot makes an outbound connection to
@@ -222,6 +261,7 @@ ai_browser_agent/
 ├── browser.py         # Browser arm: Playwright wrapper (launch Chrome, observe page, run actions) + BrowserToolProvider
 ├── excel_tools.py      # Excel arm: openpyxl wrapper (open/read/write/save .xlsx files) + ExcelToolProvider
 ├── mcp_tools.py        # MCP arm (optional): wraps an MCP server (e.g. the "fetch" server) as a ToolProvider
+├── windows_tools.py     # Windows desktop automation arm (optional): pywinauto (UI Automation) as a ToolProvider
 ├── tool_provider.py    # ToolProvider/ToolSpec contract every arm implements, and the R0-R3 risk-tier policy
 ├── errors.py           # Shared TaskCannotBeCompleted exception + explain() formatter
 ├── llm.py             # Provider-agnostic LLM client (OpenAI / Anthropic / mock); builds tools from ToolSpecs
@@ -281,6 +321,10 @@ above) are off by default; nothing below is needed unless you turn one on.
   [Node.js](https://nodejs.org/) installed (which also gives you `npx`) --
   no extra pip package for either.
 
+**Optional: the Windows desktop automation arm.** Off by default
+(`ENABLE_WINDOWS_AUTOMATION=false`); Windows-only. `pip install pywinauto`
+to turn it on -- see **Windows desktop automation arm** above.
+
 ## Running
 
 ```
@@ -337,6 +381,11 @@ see **MCP arm** above):
 10. (Brave Search) `Search the web for the current version of Playwright and tell me what it is.`
 11. (filesystem) `List the files in the folder you have access to, then read the first one and summarize it.` (points at whatever `MCP_FILESYSTEM_ROOT` is set to)
 
+Windows arm (only works once `ENABLE_WINDOWS_AUTOMATION=true` -- see
+**Windows desktop automation arm** above):
+
+12. `Launch Notepad, type "Hello from the agent" into it, and tell me what the window's title bar says.`
+
 ### Milestones (recommended order to test in)
 
 1. **Milestone 1**: `Open Google and search for OpenAI.` -- confirms the
@@ -358,6 +407,9 @@ see **MCP arm** above):
    flag, try its matching task (#9, #10, or #11 above), confirm it works,
    then move to the next -- the same "prove the mechanism before trusting
    it" approach used for the browser/Excel arms.
+7. **Milestone 7** (Windows arm): set `ENABLE_WINDOWS_AUTOMATION=true`,
+   `pip install pywinauto`, try task #12 above -- confirms the arm can
+   launch a real app, type into it, and read back its own result.
 
 ## Discord bot interface
 
@@ -445,6 +497,7 @@ each other.
 | `MCP_STARTUP_TIMEOUT_S` | How long to wait for an MCP server to start before giving up; default `90` (an npx-launched server can be slow on a cold npm registry round-trip) |
 | `DISCORD_BOT_TOKEN` | Bot token for `discord_bot.py`; it refuses to start without one |
 | `DISCORD_ALLOWED_USER_ID` | Your Discord user ID; `discord_bot.py` ignores everyone else |
+| `ENABLE_WINDOWS_AUTOMATION` | `true` adds the Windows desktop automation arm (`windows_*`); `false` by default, Windows-only -- see **Windows desktop automation arm** above |
 
 Changing `LLM_PROVIDER`/`LLM_MODEL` is the only thing needed to switch
 models later -- nothing else in the code references a specific provider.
@@ -547,6 +600,6 @@ checking what the agent actually did rather than trusting its summary.
 No web UI, no mobile app (Discord is the remote interface instead), no
 database, no multi-agent system, no always-on background process, no
 long-term memory across tasks, no Docker, and never a CAPTCHA/MFA bypass
-(permanent, not a scope-for-now cut). Windows desktop control is scoped
-but not built -- see `ARCHITECTURE_DECISIONS.md`'s "Explicitly deferred"
-table for this and the other candidates considered and set aside, and why.
+(permanent, not a scope-for-now cut). See `ARCHITECTURE_DECISIONS.md`'s
+"Explicitly deferred" table for the other candidates considered and set
+aside, and why.

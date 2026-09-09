@@ -18,3 +18,8 @@ discord.py>=2.7,<3.0
 # ENABLE_MCP_BRAVE_SEARCH and ENABLE_MCP_FILESYSTEM need no extra pip
 # package -- their servers are launched via `npx` (Node.js), not pip. You
 # do need Node.js/npm installed on your machine for either of those two.
+# Optional: only needed if you set ENABLE_WINDOWS_AUTOMATION=true --
+# Windows-only. Drives apps via UI Automation (a real accessibility tree),
+# the same reliability class as Playwright reading the DOM, not blind
+# pixel/coordinate clicking.
+# pywinauto

@@ -7,6 +7,7 @@ steps it may take, whether to ask before risky actions, etc.) lives in a
 hard-coded in source that might get committed to git.
 """
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -97,6 +98,14 @@ class Config:
     enable_mcp_filesystem: bool = field(default_factory=lambda: _bool("ENABLE_MCP_FILESYSTEM", False))
     mcp_filesystem_root: str = field(default_factory=lambda: os.getenv("MCP_FILESYSTEM_ROOT", ""))
 
+    # --- Windows desktop automation arm (windows_tools.py) ---
+    # Off by default (ARCHITECTURE_DECISIONS.md section 5): far more
+    # open-ended/brittle than the browser (DOM) or Excel (file format)
+    # arms, so every mutating windows_* action is R3 (always confirms)
+    # regardless of this flag or CONFIRM_SENSITIVE_ACTIONS/CONFIRM_R1_ACTIONS
+    # -- see windows_tools.py and tool_provider.py's requires_confirmation().
+    enable_windows_automation: bool = field(default_factory=lambda: _bool("ENABLE_WINDOWS_AUTOMATION", False))
+
     def validate(self) -> list[str]:
         """Return a list of human-readable problems, empty if config is OK."""
         problems = []
@@ -127,6 +136,11 @@ class Config:
                 )
             elif not Path(self.mcp_filesystem_root).is_dir():
                 problems.append(f"MCP_FILESYSTEM_ROOT '{self.mcp_filesystem_root}' is not an existing directory.")
+        if self.enable_windows_automation and sys.platform != "win32":
+            problems.append(
+                "ENABLE_WINDOWS_AUTOMATION is true, but this is not Windows (sys.platform != 'win32'). "
+                "The Windows desktop automation arm only works on Windows."
+            )
         return problems
 
 

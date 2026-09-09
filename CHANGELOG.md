@@ -14,6 +14,27 @@ full commit message.
 
 ## 2026-09-09
 
+- Added Windows desktop automation as a fourth `ToolProvider` arm
+  (`windows_tools.py`, via pywinauto's UI Automation backend), scoped down
+  exactly as the design decision recorded for it called for: launch-app +
+  list/click/type/read-controls only, controls addressed by index from the
+  most recent listing (mirrors the browser arm's `observe()` ->
+  `click(index)` pattern), every mutating action R3 (always confirms, not
+  configurable off). Off by default (`ENABLE_WINDOWS_AUTOMATION`).
+  Validated against real windows (Notepad, Calculator) both directly and
+  through a full end-to-end run of the actual agent loop, which surfaced
+  three real bugs neither mocked tests nor pywinauto's docs would have
+  caught: typing via UIA's ValuePattern (`set_edit_text`) silently
+  corrupted text with no exception raised on a modern WinUI-based app,
+  fixed by making `type_keys()` (real simulated keystrokes) the primary
+  method instead; a control reference from `windows_list_controls` can go
+  stale the moment the app updates that control in place, now documented
+  in the tool descriptions so the model re-lists controls before reading
+  anything a prior action may have changed; and clicking via `click_input()`
+  (real synthetic mouse input at screen coordinates) silently did nothing
+  whenever another window had focus between LLM-driven steps -- caught only
+  by a full agent-driven run, not isolated manual calls -- fixed by using
+  `invoke()` (UIA's InvokePattern) as the primary click method instead.
 - Added an eval suite (`evals/`) that runs representative tasks against a
   real, configured LLM and scores what the agent actually did, complementing
   the mocked test suite which only proves the mechanism is correct.
