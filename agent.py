@@ -50,6 +50,19 @@ def ask_confirmation(prompt: str) -> bool:
 
 MAX_MANUAL_RESOLUTION_OFFERS = 3
 
+# How many consecutive VERIFY "no observable change" warnings (see the
+# VERIFY block in run_task()) before the loop first nudges the model to
+# try something different, and before it gives up entirely. This catches
+# a failure mode the exact-repeat stuck-guard below can't: the model
+# trying a series of DIFFERENT actions (different elements, different
+# tools) that each individually accomplish nothing -- not literally
+# repeating one action, so it would otherwise burn through MAX_STEPS
+# before failing with a vague "did not finish" error instead of a precise
+# diagnosis. The hint threshold fires once, giving the model a chance to
+# self-correct before the harder abort threshold ends the task.
+CONSECUTIVE_NO_EFFECT_HINT_THRESHOLD = 2
+CONSECUTIVE_NO_EFFECT_ABORT_THRESHOLD = 4
+
 
 def offer_manual_resolution(url: str, config, dry_run: bool, logger: TaskLogger, attempt: int) -> bool:
     """
@@ -111,6 +124,7 @@ def run_task(
     empty_finish_attempts = 0
     wall_offer_attempts = 0
     steps_taken = 0
+    consecutive_no_effect_actions = 0
     pending_verify: dict | None = None
     llm = None
     # Structured result contract (see ARCHITECTURE_DECISIONS.md section 4):
@@ -181,11 +195,43 @@ def run_task(
                 )
                 if warning:
                     verification_warnings.append(warning)
+                    consecutive_no_effect_actions += 1
                     logger.note(f"VERIFY: {warning}")
                     print(f"  [verify] (!) {warning}")
                     if history:
                         history[-1] += f" [VERIFY: {warning}]"
+
+                    # Give the model one chance to self-correct before
+                    # giving up entirely -- see CONSECUTIVE_NO_EFFECT_*
+                    # thresholds' comment. Different actions each having no
+                    # effect (e.g. clicking several unrelated elements in
+                    # turn) never trips the exact-repeat guard below, so
+                    # this is the only thing that would ever catch it.
+                    if consecutive_no_effect_actions >= CONSECUTIVE_NO_EFFECT_ABORT_THRESHOLD:
+                        raise TaskCannotBeCompleted(
+                            explain(
+                                f"The agent made no observable progress for "
+                                f"{consecutive_no_effect_actions} consecutive actions.",
+                                "Each of the last several actions was expected to change the page but "
+                                "didn't -- the model may be targeting the wrong elements, or the page "
+                                "may not be responding the way it appears to.",
+                                "Try rephrasing the task to be more specific about what to interact "
+                                "with, or check that the page behaves as expected outside the agent.",
+                            )
+                        )
+                    if consecutive_no_effect_actions == CONSECUTIVE_NO_EFFECT_HINT_THRESHOLD and history:
+                        hint = (
+                            "your last few actions had no observable effect -- try a different element, "
+                            "a different tool, or reconsider your approach rather than repeating similar actions."
+                        )
+                        history[-1] += f" [HINT: {hint}]"
+                        logger.note(f"HINT: {hint}")
+                        print(f"  [hint] {hint}")
+                else:
+                    consecutive_no_effect_actions = 0
                 pending_verify = None
+            else:
+                consecutive_no_effect_actions = 0
 
             if observation is not None and observation.looks_like_login and step > 1:
                 logger.note(f"Login/authentication wall detected at {observation.url}")
@@ -222,17 +268,27 @@ def run_task(
             print(f"\nStep {step}: {thought}")
             print(f"  -> {action} {args}")
 
-            # --- stuck-loop / cost guard: bail out if the model repeats
-            # the exact same action three times in a row (Phase 1 keeps
-            # this simple rather than trying to be clever about "progress").
+            # --- stuck-loop / cost guard: bail out if the model repeats the
+            # exact same action three times in a row, or oscillates between
+            # two different actions (A, B, A, B) -- the second catches a
+            # model bouncing between two elements/approaches without ever
+            # trying a third, which the exact-repeat check alone would miss
+            # since no single action repeats three times running.
             # "finish" is excluded here because a repeated empty-summary
             # finish is a distinct failure mode with its own guard below. ---
             history.append(f"{action} {args} -> thought: {thought}")
-            recent = [h.split(" -> thought:")[0] for h in history[-3:]]
-            if action != "finish" and len(history) >= 3 and len(set(recent)) == 1:
+            recent3 = [h.split(" -> thought:")[0] for h in history[-3:]]
+            recent4 = [h.split(" -> thought:")[0] for h in history[-4:]]
+            exact_repeat = len(history) >= 3 and len(set(recent3)) == 1
+            oscillating = (
+                len(history) >= 4 and recent4[0] == recent4[2] and recent4[1] == recent4[3]
+                and recent4[0] != recent4[1]
+            )
+            if action != "finish" and (exact_repeat or oscillating):
                 raise TaskCannotBeCompleted(
                     explain(
-                        "The agent repeated the same action three times without progress.",
+                        "The agent repeated the same action three times without progress." if exact_repeat
+                        else "The agent is oscillating between two actions without progress.",
                         "The AI model may be stuck (e.g. the page didn't change as expected, "
                         "or the element index it picked doesn't do what it thinks).",
                         "Try rephrasing the task to be more specific, or increase MAX_STEPS "

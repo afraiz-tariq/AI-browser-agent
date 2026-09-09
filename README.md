@@ -94,7 +94,15 @@ Concretely, each step of a task is:
    had failed, sending it into a repeated-clicking spiral until it tripped
    the stuck-loop guard below.
 5. Repeat, up to `MAX_STEPS` times, until the model returns `finish` (or
-   the agent detects a login wall, a stuck loop, or a hard error).
+   the agent detects a login wall, a stuck loop, or a hard error). "Stuck"
+   isn't just the same action repeated three times running -- the agent
+   also catches oscillation (bouncing between two actions, e.g. scroll
+   down/up/down/up, without a third option in between) and a run of
+   several *different* actions that each individually had no observable
+   effect (which neither the exact-repeat nor the oscillation check would
+   catch on their own). The latter first nudges the model with a hint to
+   try something different before giving up a couple of steps later --
+   see `CONSECUTIVE_NO_EFFECT_*` in `agent.py`.
 
 Every step is written to a per-task log file, and a structured result
 record is also saved as JSON under `output/` -- for every run, not just
@@ -451,8 +459,11 @@ wall, and a task that doesn't finish within `MAX_STEPS`.
   it starts logged out everywhere. Run the agent once, let it open the
   site, and log in manually in that window -- it'll be remembered next
   time.
-- **"The agent repeated the same action three times without progress"**
-  -- the model got stuck; try rephrasing the task more specifically.
+- **"The agent repeated the same action three times without progress"**,
+  **"...is oscillating between two actions..."**, or **"...made no
+  observable progress for N consecutive actions"** -- the model got stuck
+  (three different ways of detecting the same underlying problem); try
+  rephrasing the task more specifically.
 - **Task fails with "did not finish within MAX_STEPS"** -- either raise
   `MAX_STEPS` in `.env`, or split the task into smaller ones.
 - **Model reply is missing valid JSON** -- rare, but can happen with very

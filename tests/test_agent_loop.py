@@ -200,6 +200,82 @@ def test_repeated_action_is_detected_as_stuck(test_config, fixtures_server):
     assert "repeated the same action" in outcome["result"]
 
 
+def test_oscillating_between_two_different_actions_is_detected_as_stuck(test_config, fixtures_server):
+    # No single action repeats three times in a row here (the exact-repeat
+    # guard alone wouldn't catch this), but the model never makes any real
+    # progress either -- just bounces between two actions indefinitely.
+    mock = MockProvider([
+        _reply("Navigating.", "goto", {"url": f"{fixtures_server}/index.html"}),
+        _reply("Scrolling down.", "scroll", {"direction": "down"}),
+        _reply("Scrolling up.", "scroll", {"direction": "up"}),
+        _reply("Scrolling down again.", "scroll", {"direction": "down"}),
+        _reply("Scrolling up again.", "scroll", {"direction": "up"}),
+    ])
+    llm_client = LLMClient(mock)
+
+    outcome = run_task("Oscillate forever.", test_config, dry_run=True, llm_client=llm_client)
+
+    assert outcome["success"] is False
+    assert "oscillating between two actions" in outcome["result"]
+
+
+def test_repeated_no_effect_actions_get_a_hint_then_eventually_abort(test_config, fixtures_server, capsys):
+    # Different elements each time (not a literal repeat, and not an A-B-A-B
+    # oscillation either), but every single click has zero observable
+    # effect -- the exact-repeat and oscillation guards would both miss
+    # this; only the consecutive-no-effect counter catches it.
+    mock = MockProvider([
+        _reply("Navigating to several inert buttons.", "goto", {"url": f"{fixtures_server}/several_inert_buttons.html"}),
+        _reply("Clicking the first button.", "click", {"index": 0}),
+        _reply("Clicking the second button.", "click", {"index": 1}),
+        _reply("Clicking the third button.", "click", {"index": 2}),
+        _reply("Clicking the fourth button.", "click", {"index": 3}),
+    ])
+    llm_client = LLMClient(mock)
+
+    outcome = run_task("Click every button.", test_config, dry_run=True, llm_client=llm_client)
+
+    assert outcome["success"] is False
+    assert "no observable progress" in outcome["result"]
+    captured = capsys.readouterr()
+    assert "[hint]" in captured.out  # the earlier self-correction nudge fired first, before the hard abort
+
+
+def test_a_single_no_effect_action_does_not_trigger_the_progress_guard(test_config, fixtures_server):
+    # One VERIFY warning alone must not be treated as "stuck" -- only a
+    # run of several in a row. Regression guard against an overly
+    # trigger-happy threshold.
+    mock = MockProvider([
+        _reply("Navigating.", "goto", {"url": f"{fixtures_server}/several_inert_buttons.html"}),
+        _reply("Clicking a button that does nothing.", "click", {"index": 0}),
+        _reply("Done.", "finish", {"summary": "Clicked the first button; it had no visible effect."}),
+    ])
+    llm_client = LLMClient(mock)
+
+    outcome = run_task("Click a button.", test_config, dry_run=True, llm_client=llm_client)
+
+    assert outcome["success"] is True
+
+
+def test_progress_between_no_effect_actions_resets_the_counter(test_config, fixtures_server, tmp_path):
+    # A real action succeeding in between two no-effect clicks (here, an
+    # Excel write -- something outside what VERIFY even tracks) must reset
+    # the streak, not let it silently accumulate toward the abort threshold.
+    xlsx_path = tmp_path / "data.xlsx"
+    mock = MockProvider([
+        _reply("Navigating.", "goto", {"url": f"{fixtures_server}/several_inert_buttons.html"}),
+        _reply("Clicking a button that does nothing.", "click", {"index": 0}),
+        _reply("Also opening a spreadsheet.", "excel_open", {"path": str(xlsx_path), "create_if_missing": True}),
+        _reply("Clicking another button that does nothing.", "click", {"index": 1}),
+        _reply("Done.", "finish", {"summary": "Explored the page and the spreadsheet."}),
+    ])
+    llm_client = LLMClient(mock)
+
+    outcome = run_task("Explore a bit.", test_config, dry_run=True, llm_client=llm_client)
+
+    assert outcome["success"] is True
+
+
 def test_scrolling_lets_the_model_read_past_the_initial_truncation(test_config, fixtures_server):
     # End-to-end proof that browser.py's text-pagination fix (scroll now
     # actually advances what observe() shows, instead of being a no-op for
