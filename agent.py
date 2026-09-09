@@ -33,7 +33,7 @@ from errors import TaskCannotBeCompleted, explain
 from excel_tools import ExcelSession, ExcelToolProvider
 from llm import LLMClient, LLMError
 from logger import TaskLogger
-from mcp_tools import MCPToolProvider, build_brave_search_provider, build_fetch_provider
+from mcp_tools import MCPToolProvider, build_brave_search_provider, build_fetch_provider, build_filesystem_provider
 from tool_provider import ToolProvider, ToolSpec, requires_confirmation
 
 
@@ -150,6 +150,8 @@ def run_task(
             mcp_providers.append(build_fetch_provider(config))
         if config.enable_mcp_brave_search:
             mcp_providers.append(build_brave_search_provider(config))
+        if config.enable_mcp_filesystem:
+            mcp_providers.append(build_filesystem_provider(config))
         providers.extend(mcp_providers)
 
         tool_specs: list[ToolSpec] = []

@@ -279,3 +279,50 @@ def build_brave_search_provider(config) -> MCPToolProvider:
         env={"BRAVE_API_KEY": config.brave_api_key}, risk_overrides=BRAVE_SEARCH_RISK_OVERRIDES,
         startup_timeout=config.mcp_startup_timeout_s,
     )
+
+
+# Reviewed once, by us: the read/list/search/info tools have no side
+# effect beyond reading from disk, so they're R0 -- directly analogous to
+# excel_read_cell/excel_read_range. write_file, edit_file, create_directory,
+# and move_file are deliberately NOT listed here: this is meant to be a
+# read-only arm (the same "safest proving ground" reasoning as fetch and
+# Brave Search), so those fall through to ToolSpec's default, R3 -- always
+# confirmed, never silently enabled by a misconfigured .env. A user who
+# genuinely wants the agent writing arbitrary local files can still say
+# yes to that confirmation each time; nothing here hard-blocks it.
+# `read_file` is the server's own deprecated alias for `read_text_file`
+# (identical read-only behavior) -- classified the same for consistency,
+# in case an older model habit or a future server version still reaches
+# for the old name.
+FILESYSTEM_RISK_OVERRIDES: dict[str, RiskLevel] = {
+    "read_file": "R0",
+    "read_text_file": "R0",
+    "read_media_file": "R0",
+    "read_multiple_files": "R0",
+    "list_directory": "R0",
+    "list_directory_with_sizes": "R0",
+    "directory_tree": "R0",
+    "search_files": "R0",
+    "get_file_info": "R0",
+    "list_allowed_directories": "R0",
+}
+
+
+def build_filesystem_provider(config) -> MCPToolProvider:
+    """Factory for the third MCP server this project wires up: read-only
+    access to one local directory the user explicitly opts into via
+    MCP_FILESYSTEM_ROOT (see config.py -- there is deliberately no default
+    directory; a wrong guess at "somewhere safe" is not this codebase's
+    call to make). The official, actively-maintained
+    @modelcontextprotocol/server-filesystem enforces that same boundary
+    itself too (a path outside the given root is rejected server-side,
+    confirmed by actually trying it), so this is defense in depth, not the
+    only thing standing between the model and the rest of the disk.
+
+    Pinned to the exact version FILESYSTEM_RISK_OVERRIDES was reviewed
+    against, same reasoning as build_brave_search_provider().
+    """
+    return MCPToolProvider(
+        command="npx", args=["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", config.mcp_filesystem_root],
+        risk_overrides=FILESYSTEM_RISK_OVERRIDES, startup_timeout=config.mcp_startup_timeout_s,
+    )

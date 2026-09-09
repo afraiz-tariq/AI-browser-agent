@@ -133,16 +133,30 @@ opt-in flag:
   real-world dependency fetch's bundled Readability engine already has)
   and a free API key from https://brave.com/search/api/.
   `ENABLE_MCP_BRAVE_SEARCH=true` plus `BRAVE_API_KEY=...`.
+- **Filesystem** -- read/list/search files in exactly one local folder you
+  name, via the official `@modelcontextprotocol/server-filesystem`.
+  Exposed as `mcp_read_text_file`, `mcp_list_directory`, `mcp_search_files`,
+  etc. There's deliberately no default folder: `MCP_FILESYSTEM_ROOT` names
+  the one directory you're comfortable exposing, and the server itself
+  rejects any path outside it as a second line of defense on top of this
+  codebase's own risk tiers. Read-only tools are R0; the server's own
+  write/edit/create-directory/move tools are deliberately left unclassified
+  (R3, always confirm -- see below) rather than silently trusted just
+  because they came bundled with the read tools. `ENABLE_MCP_FILESYSTEM=true`
+  plus `MCP_FILESYSTEM_ROOT=/path/you/choose`.
 
 Risk classification for MCP tools is done by this codebase, never taken
 from the server's own tool description -- see `mcp_tools.py`'s
-`FETCH_SERVER_RISK_OVERRIDES` / `BRAVE_SEARCH_RISK_OVERRIDES`. Any tool an
-MCP server exposes that isn't explicitly reviewed there defaults to tier R3
-(always confirm, not configurable off), so a server update that silently
-adds a new or dangerous tool can't skip confirmation just because the
-server calls it safe. Adding a further MCP server means adding one more
-small factory function like `build_fetch_provider()`/
-`build_brave_search_provider()`, not changing `MCPToolProvider` itself --
+`FETCH_SERVER_RISK_OVERRIDES` / `BRAVE_SEARCH_RISK_OVERRIDES` /
+`FILESYSTEM_RISK_OVERRIDES`. Any tool an MCP server exposes that isn't
+explicitly reviewed there defaults to tier R3 (always confirm, not
+configurable off), so a server update that silently adds a new or
+dangerous tool -- or, as with the filesystem server, ships some genuinely
+dangerous tools alongside safe ones in the very same package -- can't
+skip confirmation just because the server calls it safe. Adding a further
+MCP server means adding one more small factory function like
+`build_fetch_provider()`/`build_brave_search_provider()`/
+`build_filesystem_provider()`, not changing `MCPToolProvider` itself --
 which is also how an API key gets to a server that needs one: as an
 environment variable passed to just that subprocess (`MCPToolProvider`'s
 `env` argument), not a CLI argument that would show up in a local process
@@ -389,6 +403,8 @@ each other.
 | `MCP_FETCH_COMMAND` | Command used to launch the fetch MCP server; default `mcp-server-fetch` (must be on PATH) |
 | `ENABLE_MCP_BRAVE_SEARCH` | `true` adds the read-only Brave Search arm (`mcp_brave_*`); `false` by default -- see **MCP arm** above |
 | `BRAVE_API_KEY` | Required if `ENABLE_MCP_BRAVE_SEARCH=true` -- free key from https://brave.com/search/api/ |
+| `ENABLE_MCP_FILESYSTEM` | `true` adds the read-only filesystem arm (`mcp_read_text_file`, etc.); `false` by default -- see **MCP arm** above |
+| `MCP_FILESYSTEM_ROOT` | Required if `ENABLE_MCP_FILESYSTEM=true` -- the one local folder the agent may read from |
 | `MCP_STARTUP_TIMEOUT_S` | How long to wait for an MCP server to start before giving up; default `90` (an npx-launched server can be slow on a cold npm registry round-trip) |
 | `DISCORD_BOT_TOKEN` | Bot token for `discord_bot.py`; it refuses to start without one |
 | `DISCORD_ALLOWED_USER_ID` | Your Discord user ID; `discord_bot.py` ignores everyone else |

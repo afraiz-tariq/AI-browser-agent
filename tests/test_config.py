@@ -111,3 +111,28 @@ def test_validate_does_not_require_a_brave_key_when_brave_search_is_disabled():
 def test_validate_can_report_multiple_problems_at_once():
     problems = Config(llm_provider="openai", openai_api_key="", max_steps=0).validate()
     assert len(problems) >= 2
+
+
+def test_validate_flags_filesystem_enabled_without_a_root():
+    problems = Config(llm_provider="mock", max_steps=5, enable_mcp_filesystem=True, mcp_filesystem_root="").validate()
+    assert any("MCP_FILESYSTEM_ROOT" in p for p in problems)
+
+
+def test_validate_flags_filesystem_root_that_does_not_exist():
+    problems = Config(
+        llm_provider="mock", max_steps=5, enable_mcp_filesystem=True,
+        mcp_filesystem_root="/this/path/definitely/does/not/exist/anywhere",
+    ).validate()
+    assert any("not an existing directory" in p for p in problems)
+
+
+def test_validate_passes_with_filesystem_enabled_and_a_real_directory(tmp_path):
+    problems = Config(
+        llm_provider="mock", max_steps=5, enable_mcp_filesystem=True, mcp_filesystem_root=str(tmp_path),
+    ).validate()
+    assert problems == []
+
+
+def test_validate_does_not_require_a_filesystem_root_when_disabled():
+    problems = Config(llm_provider="mock", max_steps=5, enable_mcp_filesystem=False, mcp_filesystem_root="").validate()
+    assert problems == []

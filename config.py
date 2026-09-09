@@ -90,6 +90,12 @@ class Config:
     # connection. See mcp_tools.py's STARTUP_TIMEOUT_S for the measured
     # real-world range this was chosen against.
     mcp_startup_timeout_s: int = field(default_factory=lambda: _int("MCP_STARTUP_TIMEOUT_S", 90))
+    # Third MCP server: read-only access to ONE local directory (also off
+    # by default). Deliberately no default directory -- guessing at
+    # "somewhere safe" on the user's disk is not this codebase's call to
+    # make; the user names an exact folder they're comfortable exposing.
+    enable_mcp_filesystem: bool = field(default_factory=lambda: _bool("ENABLE_MCP_FILESYSTEM", False))
+    mcp_filesystem_root: str = field(default_factory=lambda: os.getenv("MCP_FILESYSTEM_ROOT", ""))
 
     def validate(self) -> list[str]:
         """Return a list of human-readable problems, empty if config is OK."""
@@ -113,6 +119,14 @@ class Config:
                 "ENABLE_MCP_BRAVE_SEARCH is true but BRAVE_API_KEY is not set. "
                 "Get a free key at https://brave.com/search/api/."
             )
+        if self.enable_mcp_filesystem:
+            if not self.mcp_filesystem_root:
+                problems.append(
+                    "ENABLE_MCP_FILESYSTEM is true but MCP_FILESYSTEM_ROOT is not set. "
+                    "Set it to the one local folder you want the agent able to read from."
+                )
+            elif not Path(self.mcp_filesystem_root).is_dir():
+                problems.append(f"MCP_FILESYSTEM_ROOT '{self.mcp_filesystem_root}' is not an existing directory.")
         return problems
 
 
