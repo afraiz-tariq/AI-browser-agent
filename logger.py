@@ -14,8 +14,19 @@ from pathlib import Path
 
 # Redact anything that looks like a key/token/password so a stray value
 # never ends up on disk, even if a future code path passes one in by mistake.
+#
+# The sk- pattern has NO capturing group, unlike the other three -- it
+# matches a bare secret with no "label:" prefix to preserve, so the whole
+# match must be replaced (see _redact()'s `if m.lastindex` branch below).
+# Wrapping the whole pattern in parens here was a real bug: that makes it
+# group 1, so the "keep group 1, redact the rest" branch below fired and
+# reproduced the entire secret verbatim with "[REDACTED]" uselessly
+# appended after it -- the opposite of redaction. The character class also
+# has to include "_" and "-": real Anthropic keys look like
+# "sk-ant-api03-<base64url>-<checksum>", and a class of only [A-Za-z0-9]
+# stops matching at the first hyphen, missing the key almost entirely.
 _SECRET_PATTERNS = [
-    re.compile(r"(sk-[A-Za-z0-9]{10,})"),
+    re.compile(r"sk-[A-Za-z0-9_-]{10,}"),
     re.compile(r"(api[_-]?key\s*[:=]\s*)\S+", re.IGNORECASE),
     re.compile(r"(password\s*[:=]\s*)\S+", re.IGNORECASE),
     re.compile(r"(authorization:\s*bearer\s+)\S+", re.IGNORECASE),
