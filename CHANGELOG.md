@@ -14,6 +14,9 @@ full commit message.
 
 ## 2026-09-09
 
+- Added a GitHub Actions workflow (`.github/workflows/tests.yml`) that runs
+  the offline test suite on every push/PR to `main` -- the project had no CI
+  at all before this; every prior test run was manual.
 - Added Windows desktop automation as a fourth `ToolProvider` arm
   (`windows_tools.py`, via pywinauto's UI Automation backend), scoped down
   exactly as the design decision recorded for it called for: launch-app +

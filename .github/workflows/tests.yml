@@ -1,0 +1,35 @@
+name: Tests
+
+# Runs the offline test suite (mocked LLM, local fixture pages, no real
+# API keys or internet needed) on every push/PR to main. Optional deps
+# (openai, mcp, pywinauto) are deliberately NOT installed here -- their
+# test files skip cleanly without them (see tests/test_llm_providers_openai.py,
+# tests/test_mcp_*.py, tests/test_windows_tools.py), same as a normal
+# local `pip install -r requirements.txt` without the commented-out extras.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Install Chrome for Playwright
+        run: python -m playwright install --with-deps chrome
+
+      - name: Run tests
+        run: pytest tests/ -v
