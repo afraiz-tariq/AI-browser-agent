@@ -5,7 +5,7 @@ reads/writes real .xlsx files on disk, no browser or LLM involved.
 import openpyxl
 import pytest
 
-from excel_tools import ExcelError, ExcelSession
+from excel_tools import ExcelError, ExcelSession, ExcelToolProvider
 
 
 def _make_workbook(path, sheet_data):
@@ -83,3 +83,88 @@ def test_list_sheets(tmp_path):
     session.execute("excel_open", {"path": str(path)})
     result = session.execute("excel_list_sheets", {})
     assert "First" in result and "Second" in result
+
+
+def test_write_cell_coerces_numeric_strings_but_leaves_text_as_text(tmp_path):
+    path = tmp_path / "coerce.xlsx"
+    session = ExcelSession()
+    session.execute("excel_open", {"path": str(path), "create_if_missing": True})
+
+    session.execute("excel_write_cell", {"sheet": "Sheet", "cell": "A1", "value": "3.5"})
+    session.execute("excel_write_cell", {"sheet": "Sheet", "cell": "A2", "value": "42"})
+    session.execute("excel_write_cell", {"sheet": "Sheet", "cell": "A3", "value": "Widget"})
+    session.execute("excel_save", {})
+
+    wb = openpyxl.load_workbook(path)
+    assert wb["Sheet"]["A1"].value == 3.5 and isinstance(wb["Sheet"]["A1"].value, float)
+    assert wb["Sheet"]["A2"].value == 42 and isinstance(wb["Sheet"]["A2"].value, int)
+    assert wb["Sheet"]["A3"].value == "Widget"
+
+
+def test_excel_save_with_an_explicit_path_saves_there_instead_of_overwriting(tmp_path):
+    original = tmp_path / "original.xlsx"
+    target = tmp_path / "copy.xlsx"
+    session = ExcelSession()
+    session.execute("excel_open", {"path": str(original), "create_if_missing": True})
+    session.execute("excel_write_cell", {"sheet": "Sheet", "cell": "A1", "value": "hello"})
+
+    result = session.execute("excel_save", {"path": str(target)})
+
+    assert str(target) in result
+    assert target.exists()
+    assert not original.exists()  # never written -- excel_save went to `target` instead
+    assert session.path == target  # subsequent excel_save (no path) would now target `target`
+
+
+def test_excel_save_creates_missing_parent_directories(tmp_path):
+    nested = tmp_path / "a" / "b" / "c" / "data.xlsx"
+    session = ExcelSession()
+    session.execute("excel_open", {"path": str(nested), "create_if_missing": True})
+    session.execute("excel_save", {})
+    assert nested.exists()
+
+
+def test_opening_a_corrupted_file_raises_a_clear_excel_error(tmp_path):
+    path = tmp_path / "not_really_xlsx.xlsx"
+    path.write_text("this is not a valid xlsx file")
+    session = ExcelSession()
+
+    with pytest.raises(ExcelError, match="Could not open"):
+        session.execute("excel_open", {"path": str(path)})
+
+
+def test_close_resets_the_session_to_unopened(tmp_path):
+    path = tmp_path / "data.xlsx"
+    session = ExcelSession()
+    session.execute("excel_open", {"path": str(path), "create_if_missing": True})
+    assert session.is_open() is True
+
+    session.close()
+
+    assert session.is_open() is False
+    assert session.path is None
+    with pytest.raises(ExcelError, match="No workbook is open"):
+        session.execute("excel_list_sheets", {})
+
+
+def test_describe_for_confirmation_names_the_explicit_path_when_given(tmp_path):
+    session = ExcelSession()
+    session.execute("excel_open", {"path": str(tmp_path / "data.xlsx"), "create_if_missing": True})
+    provider = ExcelToolProvider(session)
+
+    other_path = str(tmp_path / "elsewhere.xlsx")
+    desc = provider.describe_for_confirmation("excel_save", {"path": other_path})
+
+    assert other_path in desc
+    assert str(session.path) not in desc
+
+
+def test_describe_for_confirmation_names_the_current_file_when_no_path_given(tmp_path):
+    path = tmp_path / "data.xlsx"
+    session = ExcelSession()
+    session.execute("excel_open", {"path": str(path), "create_if_missing": True})
+    provider = ExcelToolProvider(session)
+
+    desc = provider.describe_for_confirmation("excel_save", {})
+
+    assert str(path) in desc
