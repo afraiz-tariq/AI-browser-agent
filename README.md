@@ -13,8 +13,10 @@ implements a common `ToolProvider` contract (see **Architecture** below)
 with a four-tier risk model (R0 read-only through R3 always-confirm)
 governing which actions ask for `[y/n]` confirmation before running. Every
 real LLM call's token usage (input/output) is tracked per task and surfaced
-in both the structured output record and `LLMClient.get_usage()`. 189
-automated tests, fully offline. Windows desktop automation is scoped (see
+in both the structured output record and `LLMClient.get_usage()`. 193
+automated tests, fully offline, plus a separate eval suite (`evals/`) that
+runs representative tasks against a real configured LLM and scores what
+the agent actually did. Windows desktop automation is scoped (see
 **Explicitly deferred** in `ARCHITECTURE_DECISIONS.md`) but deliberately
 not built here -- it needs a real Windows GUI to test against, which this
 development environment doesn't have.
@@ -230,7 +232,8 @@ ai_browser_agent/
 ├── .gitignore
 ├── logs/               # One .log file per task run (gitignored)
 ├── output/             # One structured .json result record per task run, success or failure (gitignored)
-└── tests/              # Offline tests (mock LLM + local fixture pages + tmp .xlsx files, no internet needed)
+├── tests/              # Offline tests (mock LLM + local fixture pages + tmp .xlsx files, no internet needed)
+└── evals/              # Eval suite: real tasks run against a real configured LLM -- see evals/README.md
 ```
 
 ## Installation (Windows)
@@ -530,6 +533,12 @@ single-task lock) with no real Discord connection made -- see
 pip install pytest
 pytest tests/ -v
 ```
+
+This proves the *mechanism* is correct -- it never proves a real model
+completes real tasks well, since nothing here calls a real LLM. For that,
+see `evals/README.md`: a small suite of representative tasks run against
+your own real, configured LLM (`python evals/run_evals.py`), scored by
+checking what the agent actually did rather than trusting its summary.
 
 ## What this deliberately does *not* do
 
