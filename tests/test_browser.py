@@ -112,3 +112,83 @@ def test_sensitive_action_detection(test_config, fixtures_server):
         assert "log in" in session.element_summary(button_index).lower()
     finally:
         session.stop()
+
+
+def test_is_sensitive_detects_a_genuinely_sensitive_button(test_config, fixtures_server):
+    # The positive case: the confirmation gate's whole job is to catch
+    # buttons like this one before agent.py ever runs the click.
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/sensitive_button.html")
+        obs = session.observe()
+        button_index = next(el.index for el in obs.elements if el.tag == "button")
+        assert "delete" in session.element_summary(button_index).lower()
+        assert session.is_sensitive(button_index) is True
+    finally:
+        session.stop()
+
+
+def test_is_sensitive_returns_false_for_an_ordinary_button(test_config, fixtures_server):
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/inert_button.html")
+        obs = session.observe()
+        button_index = next(el.index for el in obs.elements if el.tag == "button")
+        assert session.is_sensitive(button_index) is False
+    finally:
+        session.stop()
+
+
+def test_click_with_an_invalid_index_raises_indexerror(test_config, fixtures_server):
+    # This is exactly what agent.py's loop catches to report "[FAILED:
+    # invalid element index]" and continue instead of crashing the task --
+    # see _dispatch_action's `except IndexError` in agent.py.
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/index.html")
+        session.observe()
+        try:
+            session.click(999)
+            assert False, "expected an IndexError"
+        except IndexError as e:
+            assert "999" in str(e)
+    finally:
+        session.stop()
+
+
+def test_element_summary_falls_back_to_a_generic_label_for_an_invalid_index(test_config, fixtures_server):
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/index.html")
+        session.observe()
+        assert session.element_summary(999) == "element #999"
+    finally:
+        session.stop()
+
+
+def test_go_back_returns_to_the_previous_page(test_config, fixtures_server):
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/index.html")
+        session.goto(f"{fixtures_server}/results.html")
+        session.go_back()
+        obs = session.observe()
+        assert obs.title == "Mock Search Engine"
+    finally:
+        session.stop()
+
+
+def test_observe_truncates_visible_text_to_max_chars(test_config, fixtures_server):
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/results.html")
+        obs = session.observe(max_chars=10)
+        assert len(obs.visible_text) <= 10
+    finally:
+        session.stop()

@@ -8,9 +8,9 @@ Thin wrapper around Playwright that gives the agent loop two things:
    cheap) and lets the LLM reason using the accessibility/DOM information
    real assistive tech would use, rather than guessing from pixels.
 
-2. A small set of actions (goto, click, type, scroll, press_enter,
-   read_text) that operate on the element indices from that observation,
-   so the LLM never has to write CSS selectors by hand.
+2. A small set of actions (goto, click, type, scroll, go_back, wait) that
+   operate on the element indices from that observation, so the LLM never
+   has to write CSS selectors by hand.
 
 Everything here is synchronous (Playwright's sync API) to keep the code in
 agent.py easy to read top-to-bottom, which matters more than raw speed for
@@ -156,10 +156,6 @@ class BrowserSession:
         el.fill(text)
         if submit:
             el.press("Enter")
-
-    def press_enter(self, index: int) -> None:
-        el = self._resolve(index)
-        el.press("Enter")
 
     def scroll(self, direction: str = "down") -> None:
         delta = 800 if direction == "down" else -800
