@@ -2,7 +2,7 @@
 Task definitions for the eval suite (see evals/run_evals.py and
 evals/README.md).
 
-These are NOT the same thing as tests/*.py. The 189 tests under tests/
+These are NOT the same thing as tests/*.py. The 217 tests under tests/
 drive the loop with MockProvider -- scripted replies -- which proves the
 *mechanism* (dispatch, risk gating, verify, pagination, ...) is correct,
 but never exercises whether a real model actually reasons its way through
