@@ -230,6 +230,8 @@ ai_browser_agent/
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
+├── CHANGELOG.md         # Dated record of what shipped and when
+├── ARCHITECTURE_DECISIONS.md  # Standing reference for why things are built this way
 ├── logs/               # One .log file per task run (gitignored)
 ├── output/             # One structured .json result record per task run, success or failure (gitignored)
 ├── tests/              # Offline tests (mock LLM + local fixture pages + tmp .xlsx files, no internet needed)
