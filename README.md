@@ -619,6 +619,9 @@ pip install pytest
 pytest tests/ -v
 ```
 
+The same command also runs automatically via GitHub Actions
+(`.github/workflows/tests.yml`) on every push/PR to `main`.
+
 This proves the *mechanism* is correct -- it never proves a real model
 completes real tasks well, since nothing here calls a real LLM. For that,
 see `evals/README.md`: a small suite of representative tasks run against

@@ -33,6 +33,14 @@ full commit message.
   first scoped as "confirm everything." 6 new tests for the dynamic-risk
   logic; verified live that Calculator's digit/operator clicks no longer
   prompt while a control with a sensitive-sounding name still does.
+- Added a Windows automation eval task (`evals/tasks.py`): launch
+  Calculator, compute 7 + 3 via its real UI controls, and report the
+  result -- the same task the arm was manually verified against
+  end-to-end while building it. Skips cleanly, like the MCP eval tasks,
+  when `ENABLE_WINDOWS_AUTOMATION` is off.
+- Added a GitHub Actions workflow (`.github/workflows/tests.yml`) that runs
+  the offline test suite on every push/PR to `main` -- the project had no CI
+  at all before this; every prior test run was manual.
 - Added Windows desktop automation as a fourth `ToolProvider` arm
   (`windows_tools.py`, via pywinauto's UI Automation backend), scoped down
   exactly as the design decision recorded for it called for: launch-app +
