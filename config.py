@@ -47,6 +47,12 @@ class Config:
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gpt-4o-mini"))
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
+    # How many times the OpenAI/Anthropic SDK retries a request itself
+    # (connection errors, timeouts, 429s, 5xx) before giving up and raising
+    # -- passed straight to the SDK client, which already implements
+    # backoff/jitter correctly. 2 matches both SDKs' own default, so this
+    # is a no-op unless someone opts into a higher value via .env.
+    llm_max_retries: int = field(default_factory=lambda: _int("LLM_MAX_RETRIES", 2))
 
     # --- Cost / runaway-loop controls ---
     max_steps: int = field(default_factory=lambda: _int("MAX_STEPS", 20))

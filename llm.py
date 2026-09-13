@@ -150,11 +150,11 @@ class BaseLLMProvider(ABC):
 
 
 class OpenAIProvider(BaseLLMProvider):
-    def __init__(self, api_key: str, model: str, tool_specs: list[ToolSpec]):
+    def __init__(self, api_key: str, model: str, tool_specs: list[ToolSpec], max_retries: int = 2):
         super().__init__()
         from openai import OpenAI  # imported lazily so `mock`/tests don't need the package configured
 
-        self._client = OpenAI(api_key=api_key)
+        self._client = OpenAI(api_key=api_key, max_retries=max_retries)
         self._model = model
         self._tools = _openai_tools(tool_specs)
 
@@ -189,11 +189,11 @@ class OpenAIProvider(BaseLLMProvider):
 
 
 class AnthropicProvider(BaseLLMProvider):
-    def __init__(self, api_key: str, model: str, tool_specs: list[ToolSpec]):
+    def __init__(self, api_key: str, model: str, tool_specs: list[ToolSpec], max_retries: int = 2):
         super().__init__()
         import anthropic  # imported lazily, same reasoning as above
 
-        self._client = anthropic.Anthropic(api_key=api_key)
+        self._client = anthropic.Anthropic(api_key=api_key, max_retries=max_retries)
         self._model = model
         self._tools = _anthropic_tools(tool_specs)
 
@@ -247,17 +247,29 @@ class MockProvider(BaseLLMProvider):
 
 
 class LLMClient:
-    def __init__(self, provider: BaseLLMProvider):
+    def __init__(self, provider: BaseLLMProvider, extra_system_facts: str = ""):
         self._provider = provider
+        # Appended once per task, not re-derived every step -- e.g. the
+        # real Desktop/Documents paths (see windows_tools.resolve_known_folders),
+        # so the model has ground truth up front instead of guessing several
+        # wrong absolute paths in a row (each a wasted, sometimes-confusing
+        # step -- see agent.py's run_task()).
+        self._system_prompt = f"{SYSTEM_PROMPT}\n\n{extra_system_facts}" if extra_system_facts else SYSTEM_PROMPT
 
     @classmethod
-    def from_config(cls, config, tool_specs: list[ToolSpec]) -> "LLMClient":
+    def from_config(cls, config, tool_specs: list[ToolSpec], extra_system_facts: str = "") -> "LLMClient":
         if config.llm_provider == "openai":
-            return cls(OpenAIProvider(config.openai_api_key, config.llm_model, tool_specs))
+            return cls(
+                OpenAIProvider(config.openai_api_key, config.llm_model, tool_specs, config.llm_max_retries),
+                extra_system_facts,
+            )
         if config.llm_provider == "anthropic":
-            return cls(AnthropicProvider(config.anthropic_api_key, config.llm_model, tool_specs))
+            return cls(
+                AnthropicProvider(config.anthropic_api_key, config.llm_model, tool_specs, config.llm_max_retries),
+                extra_system_facts,
+            )
         if config.llm_provider == "mock":
-            return cls(MockProvider())
+            return cls(MockProvider(), extra_system_facts)
         raise LLMError(f"Unknown LLM_PROVIDER: {config.llm_provider}")
 
     def get_usage(self) -> dict[str, int]:
@@ -309,7 +321,7 @@ ACTION HISTORY (most recent last):
 
 {obs_section}
 """
-        action = self._provider.decide(SYSTEM_PROMPT, user_prompt)
+        action = self._provider.decide(self._system_prompt, user_prompt)
         if "action" not in action:
             raise LLMError(f"Model reply is missing the 'action' field: {action}")
         action.setdefault("args", {})

@@ -35,7 +35,7 @@ from llm import LLMClient, LLMError
 from logger import TaskLogger
 from mcp_tools import MCPToolProvider, build_brave_search_provider, build_fetch_provider, build_filesystem_provider
 from tool_provider import ToolProvider, ToolSpec, requires_confirmation
-from windows_tools import WindowsSession, WindowsToolProvider
+from windows_tools import WindowsSession, WindowsToolProvider, resolve_known_folders
 
 
 def ask_confirmation(prompt: str) -> bool:
@@ -169,7 +169,15 @@ def run_task(
                 tool_owner[spec.name] = provider
                 tool_spec_by_name[spec.name] = spec
 
-        llm = llm_client or LLMClient.from_config(config, tool_specs)
+        if llm_client is not None:
+            llm = llm_client
+        else:
+            known_folders = resolve_known_folders()
+            facts = "KNOWN LOCATIONS ON THIS MACHINE (use these exact paths verbatim for \"Desktop\"/\"Documents\"/" \
+                "\"home folder\" -- never guess a 'C:\\Users\\<name>\\...' path yourself, since redirected " \
+                "folders like OneDrive Desktop won't match a guess and will fail with a permission or not-found " \
+                "error):\n" + "\n".join(f"- {label}: {path}" for label, path in known_folders.items())
+            llm = LLMClient.from_config(config, tool_specs, facts)
 
         for step in range(1, config.max_steps + 1):
             steps_taken = step

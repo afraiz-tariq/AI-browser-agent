@@ -72,6 +72,7 @@ Two things found only by testing against real windows (Notepad, Calculator
 """
 from __future__ import annotations
 
+import os
 import re
 import time
 from typing import Any
@@ -83,6 +84,49 @@ from tool_provider import RiskLevel, ToolProvider, ToolSpec
 
 class WindowsAutomationError(Exception):
     """Raised for any Windows arm failure (window/control not found, ...)."""
+
+
+def resolve_known_folders() -> dict[str, str]:
+    """
+    Resolve this account's real Desktop/Documents locations, including
+    OneDrive-redirected ones -- so the model can be told the true path up
+    front instead of guessing.
+
+    Found from a real bot run: asked to save a file "on desktop", the model
+    had no way to know the actual path and tried 'C:\\Users\\Public\\Desktop'
+    (PermissionError), 'C:\\Users\\User\\Desktop' and a bare guessed
+    '<username>\\Desktop' (both WinError 5) across many steps before finally
+    landing on the real OneDrive-redirected Desktop -- see excel_tools.py's
+    module docstring for why the Excel arm itself can't paper over this (it
+    only ever does exactly what path it's given). Reading the same registry
+    values Explorer uses (User Shell Folders) is what makes redirection
+    visible; a plain os.path.expanduser("~/Desktop") guess would still be
+    wrong on this kind of machine.
+
+    Falls back to plain expanduser-based guesses if winreg isn't available
+    (e.g. non-Windows, where this whole arm is inactive anyway).
+    """
+    home = os.path.expanduser("~")
+    folders = {"Home": home, "Desktop": os.path.join(home, "Desktop"), "Documents": os.path.join(home, "Documents")}
+    try:
+        import winreg  # Windows-only stdlib module -- lazy import, same reasoning as pywinauto above
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        ) as key:
+            for label, value_name in (("Desktop", "Desktop"), ("Documents", "Personal")):
+                try:
+                    raw, _ = winreg.QueryValueEx(key, value_name)
+                    folders[label] = os.path.expandvars(raw)
+                except FileNotFoundError:
+                    pass
+    except (OSError, ImportError):
+        # ImportError (specifically ModuleNotFoundError, which is NOT an
+        # OSError subclass) is what `import winreg` raises on non-Windows --
+        # without catching it too, this crashed run_task() on every platform
+        # other than Windows, regardless of whether the Windows arm is enabled.
+        pass
+    return folders
 
 
 # pywinauto's type_keys() interprets these as keystroke-modifier syntax

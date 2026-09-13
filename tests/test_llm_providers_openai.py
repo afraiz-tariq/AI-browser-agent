@@ -115,3 +115,13 @@ def test_token_usage_starts_at_zero_before_any_call():
     provider = _provider()
     assert provider.total_input_tokens == 0
     assert provider.total_output_tokens == 0
+
+
+def test_max_retries_is_passed_through_to_the_sdk_client():
+    provider = OpenAIProvider(api_key="test-key", model="gpt-test", tool_specs=SOME_TOOL_SPECS, max_retries=5)
+    assert provider._client.max_retries == 5
+
+
+def test_max_retries_defaults_to_two():
+    provider = _provider()
+    assert provider._client.max_retries == 2
