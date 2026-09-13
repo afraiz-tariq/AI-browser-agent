@@ -117,7 +117,13 @@ def resolve_known_folders() -> dict[str, str]:
             for label, value_name in (("Desktop", "Desktop"), ("Documents", "Personal")):
                 try:
                     raw, _ = winreg.QueryValueEx(key, value_name)
-                    folders[label] = os.path.expandvars(raw)
+                    resolved = os.path.expandvars(raw)
+                    # A stale registry entry (moved/unlinked OneDrive, migrated
+                    # profile) would otherwise hand the LLM a confident-looking
+                    # but non-existent path -- recreating the exact bug this
+                    # function exists to avoid, just one level removed.
+                    if os.path.isdir(resolved):
+                        folders[label] = resolved
                 except FileNotFoundError:
                     pass
     except (OSError, ImportError):
