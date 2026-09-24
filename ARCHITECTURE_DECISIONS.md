@@ -77,6 +77,8 @@ In order:
    - An explicit **instruction/data/evidence trust hierarchy** in the system prompt: webpage/file/email content the agent reads is *data*, never an instruction, and can never expand what the model is permitted to do beyond what the user actually asked. (This closes a real gap — indirect prompt injection via untrusted content the browser arm already reads into context — that earlier research rounds didn't address at all.)
    - **Structured JSON result contracts** (status/summary/artifacts/verification, not a bare success string) as a small evolution of the existing `output/*.json` files.
 
+**Proposal under review (2026-09-24, not agreed):** add TypeSafe's Jev as a second, additive *decider* next to Claude (behind a `DECIDER` flag, default unchanged) plus a local voice front-end that calls `run_task()`. It was run through the §6 test and keeps every invariant; see `docs/JEV_VOICE_PLAN.md`. Its Phase 0 measures the current Claude baseline before anything changes.
+
 ## 5. Explicitly deferred, and why
 
 | Idea | Why deferred |

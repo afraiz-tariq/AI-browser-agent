@@ -12,6 +12,10 @@ ARCHITECTURE_DECISIONS.md when a change touches them. One or two plain-
 sentence bullets per change is enough; this isn't meant to restate the
 full commit message.
 
+## 2026-09-24
+
+- Added `docs/JEV_VOICE_PLAN.md`: a phased, additive plan for TypeSafe Jev decisions (with Claude escalation) and Windows voice control, based on a study of Rocky, jev-ultrafast, jev-voice and typesafe-computer-use. A proposal only; no code changed.
+
 ## 2026-09-09
 
 - Fixed `windows_type_into_control` still producing corrupted text
