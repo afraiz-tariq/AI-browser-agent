@@ -8,7 +8,7 @@ project is developed in -- there's no live API key there -- which is why
 this file refuses to run against LLM_PROVIDER=mock rather than silently
 producing meaningless "passes."
 
-What this is for: tests/*.py (217 tests) drive the agent loop with
+What this is for: tests/*.py (363 tests) drive the agent loop with
 MockProvider -- scripted replies -- to prove the *mechanism* is correct
 (dispatch, risk gating, verify, pagination, ...). None of them ever ask a
 real model to reason its way through a task. This suite does exactly
@@ -25,7 +25,9 @@ from __future__ import annotations
 import dataclasses
 import functools
 import http.server
+import argparse
 import json
+import statistics
 import sys
 import tempfile
 import threading
@@ -70,6 +72,9 @@ class EvalResult:
     detail: str
     duration_s: float
     token_usage: dict[str, int]
+    # agent.py's summarize_timings() record (per-step observe/decide/act ms,
+    # plus medians) -- the Phase 0 baseline in docs/JEV_VOICE_PLAN.md.
+    timings: dict = dataclasses.field(default_factory=dict)
 
 
 def run_single_eval(
@@ -101,8 +106,44 @@ def run_single_eval(
             task.teardown(ctx)
 
     record = json.loads(Path(outcome["output_path"]).read_text(encoding="utf-8"))
-    token_usage = record.get("token_usage", {"input_tokens": 0, "output_tokens": 0})
-    return EvalResult(task.id, task.description, passed, detail, duration, token_usage)
+    token_usage = record.get("token_usage", {"input_tokens": 0, "output_tokens": 0})  # older records lack cache fields
+    return EvalResult(task.id, task.description, passed, detail, duration, token_usage, record.get("timings", {}))
+
+
+def _all_steps(results: list[EvalResult], key: str) -> list[float]:
+    return [s[key] for r in results for s in r.timings.get("steps", []) if key in s]
+
+
+def speed_summary(results: list[EvalResult]) -> dict:
+    """Across every ran task: median per-step observe/decide/act ms, median
+    steps and seconds per task, and total tokens -- the numbers a later
+    DECIDER=jev|hybrid run gets compared against."""
+    ran = [r for r in results if r.passed is not None]
+
+    def med(values):
+        return round(statistics.median(values), 1) if values else None
+
+    return {
+        "tasks_ran": len(ran),
+        "tasks_passed": sum(1 for r in ran if r.passed),
+        "median_observe_ms": med(_all_steps(ran, "observe_ms")),
+        "median_decide_ms": med(_all_steps(ran, "decide_ms")),
+        "median_act_ms": med(_all_steps(ran, "act_ms")),
+        "median_steps_per_task": med([len(r.timings.get("steps", [])) for r in ran]),
+        "median_seconds_per_task": med([r.duration_s for r in ran]),
+        "input_tokens": sum(r.token_usage.get("input_tokens", 0) for r in ran),
+        "output_tokens": sum(r.token_usage.get("output_tokens", 0) for r in ran),
+        "cache_read_input_tokens": sum(r.token_usage.get("cache_read_input_tokens", 0) for r in ran),
+        "cache_creation_input_tokens": sum(r.token_usage.get("cache_creation_input_tokens", 0) for r in ran),
+        # DECIDER=hybrid only (jev.py): who decided each step, and how fast.
+        "jev_decisions": sum(r.token_usage.get("jev_decisions", 0) for r in ran),
+        "claude_escalations": sum(r.token_usage.get("claude_escalations", 0) for r in ran),
+        "jev_input_tokens": sum(r.token_usage.get("jev_input_tokens", 0) for r in ran),
+        "median_decide_ms_jev_steps": med([s["decide_ms"] for r in ran for s in r.timings.get("steps", [])
+                                           if s.get("decider") == "jev" and "decide_ms" in s]),
+        "median_decide_ms_claude_steps": med([s["decide_ms"] for r in ran for s in r.timings.get("steps", [])
+                                              if s.get("decider") == "claude" and "decide_ms" in s]),
+    }
 
 
 def _print_report(results: list[EvalResult]) -> int:
@@ -123,17 +164,65 @@ def _print_report(results: list[EvalResult]) -> int:
             status = "FAIL"
         print(f"[{status}] {r.task_id} ({r.duration_s:.1f}s) -- {r.description}")
         print(f"       {r.detail}")
+        if r.timings.get("steps"):
+            print(f"       {len(r.timings['steps'])} steps, median decide {r.timings.get('median_decide_ms')} ms, "
+                  f"observe {r.timings.get('median_observe_ms')} ms, act {r.timings.get('median_act_ms')} ms")
 
     total_in = sum(r.token_usage.get("input_tokens", 0) for r in ran)
     total_out = sum(r.token_usage.get("output_tokens", 0) for r in ran)
     print("-" * 70)
     print(f"{len(passed)}/{len(ran)} passed, {len(skipped)} skipped.")
     print(f"Total token usage across all ran tasks: {total_in} input, {total_out} output.")
+    speed = speed_summary(results)
+    print(f"Prompt cache: {speed['cache_read_input_tokens']} tokens read from cache (~0.1x price), "
+          f"{speed['cache_creation_input_tokens']} written (~1.25x).")
+    if speed["jev_decisions"] or speed["claude_escalations"]:
+        print(f"Jev decided {speed['jev_decisions']} steps (median {speed['median_decide_ms_jev_steps']} ms); "
+              f"the LLM decided {speed['claude_escalations']} (median {speed['median_decide_ms_claude_steps']} ms, "
+              f"incl. the Jev call first when Jev was asked).")
+    print(f"Median per step: decide {speed['median_decide_ms']} ms, observe {speed['median_observe_ms']} ms, "
+          f"act {speed['median_act_ms']} ms. Median per task: {speed['median_steps_per_task']} steps, "
+          f"{speed['median_seconds_per_task']} s.")
     print("=" * 70)
     return 0 if not failed else 1
 
 
-def main() -> int:
+def account_problem(result: EvalResult) -> str | None:
+    """The provider refused on account grounds (no credit, bad key), so no
+    later task can tell us anything either."""
+    if result.passed is None:
+        return None
+    if "run out of credit" in result.detail:
+        return "your AI provider account has run out of credit."
+    if "rejected the API key" in result.detail:
+        return "your AI provider rejected the API key."
+    if "doesn't know the model name" in result.detail:
+        return "the provider doesn't know the LLM_MODEL name (see the WHY line above for the names it accepts)."
+    return None
+
+
+def save_results(results: list[EvalResult], config, path: Path) -> None:
+    """Machine-readable copy of the report, so a baseline and a later run
+    (e.g. a different LLM_MODEL or DECIDER) can be compared side by side.
+    Holds only task ids, pass/fail, timings and token counts -- no API keys,
+    no page contents."""
+    payload = {
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "llm_provider": config.llm_provider,
+        "llm_model": config.llm_model,
+        "decider": getattr(config, "decider", "claude"),
+        "summary": speed_summary(results),
+        "tasks": [dataclasses.asdict(r) for r in results],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(f"Saved results to {path}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run the eval suite against a real, configured LLM.")
+    parser.add_argument("--save", type=Path, help="also write the results as JSON to this path")
+    args = parser.parse_args(argv)
     config = load_config()
 
     if config.llm_provider == "mock":
@@ -165,8 +254,17 @@ def main() -> int:
         for task in TASKS:
             print(f"Running {task.id}...")
             results.append(run_single_eval(task, eval_config, tmp_path, fixtures_server))
+            if account_problem(results[-1]):
+                # Every remaining task would fail the same way within a second
+                # (seen with an unfunded DeepSeek account: 11/11 "failed" with
+                # nothing learned). Stop and say so instead.
+                print(f"\nStopping: {account_problem(results[-1])} Fix that, then run the evals again.")
+                break
 
-    return _print_report(results)
+    exit_code = _print_report(results)
+    if args.save:
+        save_results(results, eval_config, args.save)
+    return exit_code
 
 
 if __name__ == "__main__":

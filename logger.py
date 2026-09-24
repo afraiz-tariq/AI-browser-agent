@@ -27,6 +27,7 @@ from pathlib import Path
 # stops matching at the first hyphen, missing the key almost entirely.
 _SECRET_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_-]{10,}"),
+    re.compile(r"AIza[0-9A-Za-z_-]{20,}"),  # Google (Gemini) API keys
     re.compile(r"(api[_-]?key\s*[:=]\s*)\S+", re.IGNORECASE),
     re.compile(r"(password\s*[:=]\s*)\S+", re.IGNORECASE),
     re.compile(r"(authorization:\s*bearer\s+)\S+", re.IGNORECASE),

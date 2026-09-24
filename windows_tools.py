@@ -79,11 +79,31 @@ from typing import Any
 
 from browser import SENSITIVE_KEYWORDS as BROWSER_SENSITIVE_KEYWORDS
 from errors import TaskCannotBeCompleted, explain
+from secret_fields import HIDDEN
 from tool_provider import RiskLevel, ToolProvider, ToolSpec
 
 
 class WindowsAutomationError(Exception):
     """Raised for any Windows arm failure (window/control not found, ...)."""
+
+
+def _is_password_control(ctrl) -> bool:
+    """
+    UI Automation's own IsPassword flag -- the Windows equivalent of an
+    <input type="password">. A control's window_text() goes straight to the
+    model (windows_list_controls, windows_read_control_text), so a password
+    box's contents must never be read through it; see secret_fields.py.
+    Windows usually masks these itself, but this doesn't rely on that.
+
+    Only a real bool/int True counts: any failure to read the flag (older
+    control, win32 backend, a mock in tests) means "not flagged", falling
+    back to the app's own masking rather than blocking every control.
+    """
+    try:
+        flag = ctrl.element_info.element.CurrentIsPassword
+    except Exception:
+        return False
+    return type(flag) in (bool, int) and bool(flag)
 
 
 def resolve_known_folders() -> dict[str, str]:
@@ -224,6 +244,28 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
         "required": ["window_title", "index"],
         "risk_level": "R0",
     },
+    "windows_click_controls": {
+        "description": "Click SEVERAL controls of one window in order, in a single step -- e.g. Calculator's "
+                        "keys 3, +, 2, = -- instead of one windows_click_control per step. Indices come from "
+                        "the most recent windows_list_controls for this window. Stops at the first control "
+                        "that can't be clicked and reports how far it got. Call windows_list_controls "
+                        "afterwards to read any result it produced.",
+        "properties": {
+            "window_title": {
+                "type": "string",
+                "description": "The exact window_title used in the most recent windows_list_controls call "
+                                "for this window.",
+            },
+            "indices": {
+                "type": "array", "items": {"type": "integer"}, "minItems": 1, "maxItems": 20,
+                "description": "Control indices to click, in order.",
+            },
+        },
+        "required": ["window_title", "indices"],
+        # Same classification as windows_click_control: R0 unless get_dynamic_risk()
+        # finds a sensitive-looking control anywhere in the sequence (then R2).
+        "risk_level": "R0",
+    },
     "windows_type_into_control": {
         "description": "Type text into a control by index from the most recent windows_list_controls call.",
         "properties": {
@@ -286,6 +328,13 @@ class WindowsSession:
         # BrowserSession._last_elements, one list per window instead of one
         # global list since a task may have more than one window open.
         self._last_controls: dict[str, list] = {}
+        # The most recent windows_list_controls result as data, for the
+        # optional Jev decider (jev.py, DECIDER=hybrid) to choose a control
+        # from: (window_title, [{"i", "type", "text", "password"}, ...]).
+        # The same lines the model already got as text -- no extra UIA
+        # calls. Cleared when a launch or a close makes it about the wrong
+        # window, so Jev never picks from a listing that no longer applies.
+        self.last_listing: tuple[str, list[dict]] | None = None
 
     def execute(self, action: str, args: dict) -> str:
         """
@@ -312,6 +361,7 @@ class WindowsSession:
             raise WindowsAutomationError(
                 f"Could not launch '{path}': {e}. Check the path is correct and the file exists."
             ) from e
+        self.last_listing = None  # a new app is about to be in front; the old listing is for another window
         return f"Launched '{path}'."
 
     def _do_windows_list_windows(self, args: dict) -> str:
@@ -367,13 +417,20 @@ class WindowsSession:
         if not controls:
             return f"No controls found in '{window_title}'."
         lines = []
+        listing = []
         for i, ctrl in enumerate(controls):
             try:
                 ctrl_type = ctrl.friendly_class_name()
+                if _is_password_control(ctrl):
+                    lines.append(f"[{i}] {ctrl_type} (password field) '{HIDDEN}'")
+                    listing.append({"i": i, "type": ctrl_type, "text": HIDDEN, "password": True})
+                    continue
                 text = " ".join((ctrl.window_text() or "").split())[:80]
             except Exception:
                 ctrl_type, text = "unknown", ""
             lines.append(f"[{i}] {ctrl_type} '{text}'")
+            listing.append({"i": i, "type": ctrl_type, "text": text, "password": False})
+        self.last_listing = (window_title, listing)
         return f"Controls in '{window_title}':\n" + "\n".join(lines)
 
     def _resolve_control(self, window_title: str, index: int):
@@ -434,6 +491,26 @@ class WindowsSession:
                 raise WindowsAutomationError(f"Could not click control #{index} in '{window_title}': {e}") from e
         return f"Clicked control #{index} in '{window_title}'."
 
+    def _do_windows_click_controls(self, args: dict) -> str:
+        """A sequence of windows_click_control calls in one agent step (the
+        way browser-use batches several actions per model call): one model
+        decision for "3, +, 2, =" instead of four. Stops at the first failure
+        and says which clicks happened, so the model never assumes the rest."""
+        window_title = args["window_title"]
+        indices = [int(i) for i in args["indices"]][:20]
+        clicked: list[str] = []
+        for index in indices:
+            try:
+                self._do_windows_click_control({"window_title": window_title, "index": index})
+            except (WindowsAutomationError, IndexError) as e:
+                done = ", ".join(clicked) or "none"
+                raise WindowsAutomationError(
+                    f"Stopped at control #{index} in '{window_title}' after clicking: {done}. {e}"
+                ) from e
+            label = " ".join(self.get_control_text(window_title, index).split())[:40]
+            clicked.append(f"#{index} '{label}'" if label else f"#{index}")
+        return f"Clicked in order in '{window_title}': {', '.join(clicked)}."
+
     def _do_windows_type_into_control(self, args: dict) -> str:
         window_title = args["window_title"]
         index = int(args["index"])
@@ -461,12 +538,42 @@ class WindowsSession:
             # (e.g. genuinely not focusable) but does support UIA's Value
             # pattern directly.
             ctrl.set_edit_text(text)
-        return f"Typed {text!r} into control #{index} in '{window_title}'."
+        return self._report_after_typing(window_title, index, ctrl, text)
+
+    def _report_after_typing(self, window_title: str, index: int, ctrl, text: str) -> str:
+        """Say what the control now holds and whether the window's title
+        changed. Found on the user's PC: typing into Notepad renamed the
+        window from 'Untitled - Notepad' to '*hello world - Notepad', so the
+        model's next call with the old title failed and it spent two extra
+        steps (list_windows, list_controls) re-finding the window just to
+        verify. The controls stay valid under the new title, so they're
+        re-keyed to it here."""
+        note = f"Typed {text!r} into control #{index} in '{window_title}'."
+        try:
+            title_now = ctrl.top_level_parent().window_text()
+        except Exception:
+            title_now = None
+        if isinstance(title_now, str) and title_now and title_now != window_title:
+            self._last_controls[title_now] = self._last_controls.get(window_title, [])
+            if self.last_listing and self.last_listing[0] == window_title:
+                self.last_listing = (title_now, self.last_listing[1])
+            note += (f" The window's title is now '{title_now}': use that exact title from here on "
+                     "(the same control indices still work).")
+        if not _is_password_control(ctrl):
+            try:
+                content = ctrl.window_text()
+            except Exception:
+                content = None
+            if isinstance(content, str):
+                note += f" Read back from the control: {' '.join(content.split())[:200]!r}."
+        return note
 
     def _do_windows_read_control_text(self, args: dict) -> str:
         window_title = args["window_title"]
         index = int(args["index"])
         ctrl = self._resolve_control(window_title, index)
+        if _is_password_control(ctrl):
+            return f"Control #{index} in '{window_title}' is a password field; its contents are never read."
         try:
             text = ctrl.window_text()
         except Exception as e:
@@ -481,7 +588,27 @@ class WindowsSession:
         except Exception as e:
             raise WindowsAutomationError(f"Could not close '{window_title}': {e}") from e
         self._last_controls.pop(window_title, None)
+        if self.last_listing and self.last_listing[0] == window_title:
+            self.last_listing = None
         return f"Closed '{window_title}'."
+
+
+# Apps whose plain launch (bare name, no arguments) doesn't need a [y/n]:
+# opening Notepad or Calculator changes nothing by itself. Asked for by the
+# user after the first voice run, where "open notepad" stopped to ask. The
+# rule stays narrow on purpose, because windows_launch_app is otherwise R2:
+# - bare name only ("notepad.exe"): a path, e.g. a look-alike
+#   C:\Downloads\notepad.exe, still confirms;
+# - no arguments: "cmd.exe /c ..." or an app told to open/run something
+#   still confirms;
+# - only names on this list (or SAFE_APPS in .env); everything else still
+#   confirms.
+DEFAULT_SAFE_APPS = frozenset({"notepad.exe", "calc.exe", "mspaint.exe", "snippingtool.exe", "explorer.exe"})
+
+
+def normalize_app_name(name: str) -> str:
+    name = name.strip().strip('"').lower()
+    return name if name.endswith(".exe") else name + ".exe"
 
 
 class WindowsToolProvider(ToolProvider):
@@ -489,8 +616,9 @@ class WindowsToolProvider(ToolProvider):
     logic of its own beyond dispatch/description glue -- all the actual
     pywinauto mechanics stay in WindowsSession above, unchanged."""
 
-    def __init__(self, session: WindowsSession):
+    def __init__(self, session: WindowsSession, safe_apps: frozenset[str] = DEFAULT_SAFE_APPS):
         self.session = session
+        self.safe_apps = frozenset(normalize_app_name(a) for a in safe_apps)
 
     def get_tool_specs(self) -> list[ToolSpec]:
         return [
@@ -523,6 +651,10 @@ class WindowsToolProvider(ToolProvider):
             return f"launch '{args.get('path')}'"
         if name == "windows_click_control":
             return f"click control #{args.get('index')} in '{args.get('window_title')}'"
+        if name == "windows_click_controls":
+            title = args.get("window_title")
+            labels = [self.session.get_control_text(title, int(i)) or f"#{i}" for i in args.get("indices", [])]
+            return f"click these controls in order in '{title}': " + ", ".join(repr(label) for label in labels)
         if name == "windows_type_into_control":
             return f"type into control #{args.get('index')} in '{args.get('window_title')}'"
         if name == "windows_close_window":
@@ -537,9 +669,23 @@ class WindowsToolProvider(ToolProvider):
         # windows_click_control's risk depends on its target (the resolved
         # control's own accessible text, the UIA-backed equivalent of a
         # button's visible label) -- windows_type_into_control and
-        # windows_launch_app/windows_close_window get their risk entirely
-        # from their static risk_level in WINDOWS_ACTION_SPECS, so this
-        # returns None for them (falls through to that static tier).
+        # windows_close_window gets its risk entirely from its static
+        # risk_level in WINDOWS_ACTION_SPECS. windows_launch_app does too,
+        # except a plain launch of a safe-listed app (DEFAULT_SAFE_APPS /
+        # SAFE_APPS), which is R0.
+        if name == "windows_launch_app":
+            path = str(args.get("path", ""))
+            is_bare_name = path.strip() and not re.search(r"[\\/:]", path)
+            if is_bare_name and not (args.get("args") or "").strip() and normalize_app_name(path) in self.safe_apps:
+                return "R0"  # a plain launch of a known harmless app -- see DEFAULT_SAFE_APPS
+            return None  # anything else keeps the static R2
+        if name == "windows_click_controls":
+            # Risky if ANY control in the sequence would be risky on its own.
+            window_title = args.get("window_title")
+            for index in args.get("indices") or []:
+                if self.get_dynamic_risk("windows_click_control", {"window_title": window_title, "index": index}):
+                    return "R2"
+            return None
         if name == "windows_click_control":
             window_title = args.get("window_title")
             index = args.get("index")

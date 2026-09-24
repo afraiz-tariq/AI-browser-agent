@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 217 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 363 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -189,7 +189,7 @@ Controls are addressed by index from the most recent `windows_list_controls`
 call for that window -- mirrors the browser arm's `observe()` ->
 `click(index)` pattern exactly, never a name/selector the model guesses.
 
-- `windows_launch_app(path, args)` -- R2.
+- `windows_launch_app(path, args)` -- R2, except a plain launch of a safe-listed app (`SAFE_APPS`: bare name, no args), which is R0.
 - `windows_list_windows()` -- R0.
 - `windows_list_controls(window_title)` -- R0. **Call this again after any
   click/type action, before reading a control affected by it** -- some
@@ -198,7 +198,8 @@ call for that window -- mirrors the browser arm's `observe()` ->
   reference from before the action can report stale, pre-action text.
 - `windows_click_control(window_title, index)` -- **dynamic**: R2 if the
   target control's own text matches a sensitive-keyword list, R0 otherwise.
-- `windows_type_into_control(window_title, index, text)` -- R1.
+- `windows_click_controls(window_title, indices)` -- several clicks in one step, in order (e.g. Calculator 3, +, 2, =); **dynamic** like a single click: R2 if any control in the sequence looks sensitive, else R0.
+- `windows_type_into_control(window_title, index, text)` -- R1. Reports the text read back from the control (never for password boxes) and the window's new title if typing renamed it (e.g. `*hello world - Notepad`).
 - `windows_read_control_text(window_title, index)` -- R0.
 - `windows_close_window(window_title)` -- R2.
 
@@ -216,6 +217,11 @@ keyword list (browser.py's list plus Windows-relevant additions:
 whatever button gets pressed afterward. `windows_launch_app` and
 `windows_close_window` stay R2 (default-confirm, tunable off): there's no
 control-text signal to judge a whole-app-launch or whole-window-close by.
+The one exception: launching an app on the `SAFE_APPS` list (default:
+Notepad, Calculator, Paint, Snipping Tool, File Explorer) by its bare name
+with no arguments doesn't ask -- opening one changes nothing by itself. A
+folder path (a look-alike `notepad.exe` elsewhere) or any arguments still
+ask; set `SAFE_APPS=` empty to be asked before every launch.
 This started as "every mutating action always confirms, not configurable
 off" -- the right conservative starting point before `windows_list_controls`
 existed to give real ground truth to judge risk by -- and was loosened
@@ -295,13 +301,17 @@ The plan discussed for extending this beyond the browser:
 ai_browser_agent/
 ├── agent.py          # CLI entry point + the observe/decide/act/verify loop
 ├── discord_bot.py     # Discord bot interface: calls run_task() with a chat-based confirm_callback
+├── voice.py           # Voice interface: push-to-talk, local speech-to-text, spoken results and confirmations
+├── quick_commands.py  # Voice shortcut: one-step commands (open app/site, volume, media) without a full agent run
 ├── browser.py         # Browser arm: Playwright wrapper (launch Chrome, observe page, run actions) + BrowserToolProvider
 ├── excel_tools.py      # Excel arm: openpyxl wrapper (open/read/write/save .xlsx files) + ExcelToolProvider
 ├── mcp_tools.py        # MCP arm (optional): wraps an MCP server (e.g. the "fetch" server) as a ToolProvider
 ├── windows_tools.py     # Windows desktop automation arm (optional): pywinauto (UI Automation) as a ToolProvider
 ├── tool_provider.py    # ToolProvider/ToolSpec contract every arm implements, and the R0-R3 risk-tier policy
 ├── errors.py           # Shared TaskCannotBeCompleted exception + explain() formatter
+├── secret_fields.py    # Which form fields hold secrets, so both arms mask their values before the LLM sees them
 ├── llm.py             # Provider-agnostic LLM client (OpenAI / Anthropic / mock); builds tools from ToolSpecs
+├── jev.py             # Optional TypeSafe Jev decider for browser steps (DECIDER=hybrid), Claude as fallback
 ├── logger.py           # Per-task plain-text logging (with secret redaction)
 ├── config.py           # Loads and validates .env settings
 ├── requirements.txt
@@ -448,6 +458,51 @@ Windows arm (only works once `ENABLE_WINDOWS_AUTOMATION=true` -- see
    `pip install pywinauto`, try task #12 above -- confirms the arm can
    launch a real app, type into it, and read back its own result.
 
+## Voice interface
+
+Control the agent by talking to it (Windows):
+
+```
+pip install faster-whisper sounddevice pyttsx3
+python voice.py
+```
+
+- **Hold right Ctrl** (`VOICE_PTT_KEY`) while you say a task, e.g. "Open
+  Notepad and type hello world", and release it. The agent runs the task
+  exactly like `python agent.py` would, then **says the result** aloud.
+- **Press F10** (`VOICE_STOP_KEY`) to stop a running task before its next
+  action. Ctrl+C in the window quits.
+- **Confirmations are spoken.** Before a risky action the agent asks aloud
+  and listens for ~4 seconds. **Only a plain "yes" or "confirm"
+  continues**; silence, "no", "yes please", or anything it can't make out
+  declines, the same as typing `n`.
+- **Privacy:** the microphone records only while the key is held (and for
+  the few seconds after a confirmation question). Speech-to-text runs on
+  your PC (faster-whisper); audio is never uploaded or saved. Only the
+  transcribed sentence becomes the task text.
+- The first run downloads the speech model (`VOICE_WHISPER_MODEL`, default
+  `base.en`, ~150 MB) once. `small.en` is more accurate but slower; `tiny.en`
+  is fastest.
+- **Quick commands run instantly** (well under a second, no full agent run):
+  "open notepad" / "open calculator" (apps on `SAFE_APPS`), "go to youtube",
+  "open example dot com", "search youtube for lofi beats", "volume up",
+  "mute", "pause", "next track". With `TYPESAFE_API_KEY` set, Jev also
+  catches other phrasings ("fire up the calculator"), only when it's at
+  least `QUICK_MIN_CONFIDENCE` sure. Anything longer ("open notepad and
+  type hello"), unsure, or not on the lists runs through the full agent as
+  before. Turn off with `VOICE_QUICK_COMMANDS=false`.
+- For faster steps, combine with `DECIDER=hybrid` (see **Configuration**).
+- **Troubleshooting:** `python voice.py --keys` prints the name of each key
+  you press, as the program reads it; put the one you want in
+  `VOICE_PTT_KEY`. Keys are read by asking Windows whether they're held
+  down (no keyboard hook), so it works without admin rights; if the window
+  in front runs as administrator and Python doesn't, Windows may hide its
+  key presses. `python voice.py
+  --mic-test` records 4 seconds with no key needed and shows what was heard,
+  which checks the microphone and speech model on their own. Windows must
+  allow microphone access for desktop apps (Settings > Privacy & security >
+  Microphone).
+
 ## Discord bot interface
 
 `discord_bot.py` lets you DM the agent a task from your phone (or any
@@ -512,9 +567,16 @@ each other.
 
 | Variable | Purpose |
 |---|---|
-| `LLM_PROVIDER` | `anthropic`, `openai`, or `mock` (mock is for tests only) |
+| `LLM_PROVIDER` | `anthropic`, `openai`, `deepseek`, `gemini`, `openrouter`, or `mock` (mock is for tests only) |
 | `LLM_MODEL` | Model name for that provider, e.g. `claude-sonnet-5` |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Your API key, never hard-coded |
+| `DEEPSEEK_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` | Key for `LLM_PROVIDER=deepseek` / `gemini` / `openrouter` (cheaper models; needs `pip install openai`) |
+| `OPENAI_BASE_URL` | Optional: another OpenAI-compatible address, e.g. a local LM Studio server |
+| `DECIDER` | `claude` (default): the LLM above decides every step. `hybrid`: TypeSafe's Jev decides click/type/scroll steps on web pages and click/type/re-list steps in a listed Windows app window (much faster), the LLM above everything else -- see `jev.py` |
+| `TYPESAFE_API_KEY` | Required if `DECIDER=hybrid` -- from https://console.typesafe.ai |
+| `TYPESAFE_MODEL` | Jev model name; default `jev-latest` |
+| `JEV_MIN_CONFIDENCE_WINDOWS` | Same, inside Windows app windows (default `0.8`), where Jev can't see each click's effect |
+| `JEV_MIN_CONFIDENCE` | Below this (default `0.5`) a Jev pick is ignored and the LLM above decides the step |
 | `MAX_STEPS` | Hard cap on observe/decide/act/verify cycles per task (cost control) |
 | `STEP_TIMEOUT_MS` | Playwright timeout per page load/action |
 | `MAX_DOM_CHARS` | How much page text is sent to the LLM per step (cost control) |
@@ -532,8 +594,15 @@ each other.
 | `ENABLE_MCP_FILESYSTEM` | `true` adds the read-only filesystem arm (`mcp_read_text_file`, etc.); `false` by default -- see **MCP arm** above |
 | `MCP_FILESYSTEM_ROOT` | Required if `ENABLE_MCP_FILESYSTEM=true` -- the one local folder the agent may read from |
 | `MCP_STARTUP_TIMEOUT_S` | How long to wait for an MCP server to start before giving up; default `90` (an npx-launched server can be slow on a cold npm registry round-trip) |
+| `VOICE_PTT_KEY` | Voice: hold this key to talk (default `ctrl_r` = right Ctrl; also `f9`, `alt_gr`, `scroll_lock`, a letter... -- `python voice.py --keys` shows names) |
+| `VOICE_STOP_KEY` | Voice: stops a running task before its next action (default `f10`) |
+| `VOICE_WHISPER_MODEL` | Voice: local speech-to-text model, `tiny.en` / `base.en` (default) / `small.en` |
+| `VOICE_LANGUAGE` | Voice: spoken language code, default `en` (use a multilingual model like `base` for others) |
+| `VOICE_QUICK_COMMANDS` | Voice: run simple one-step commands (open app/site, search, volume, media keys) instantly; default `true` |
+| `QUICK_MIN_CONFIDENCE` | Voice: how sure Jev must be (default `0.8`) to treat another phrasing as a quick command |
 | `DISCORD_BOT_TOKEN` | Bot token for `discord_bot.py`; it refuses to start without one |
 | `DISCORD_ALLOWED_USER_ID` | Your Discord user ID; `discord_bot.py` ignores everyone else |
+| `SAFE_APPS` | Apps that open without a `[y/n]` when launched by bare name with no arguments; default `notepad.exe,calc.exe,mspaint.exe,snippingtool.exe,explorer.exe`, empty = always ask |
 | `ENABLE_WINDOWS_AUTOMATION` | `true` adds the Windows desktop automation arm (`windows_*`); `false` by default, Windows-only -- see **Windows desktop automation arm** above |
 
 Changing `LLM_PROVIDER`/`LLM_MODEL` is the only thing needed to switch
@@ -562,6 +631,20 @@ models later -- nothing else in the code references a specific provider.
   ```
   Ready to save the workbook to 'C:\...\report.xlsx', overwriting it. Continue? [y/n]
   ```
+- The contents of password fields (and fields labelled PIN, CVV, card
+  number, token, API key, one-time code, ...) are never sent to the LLM: the
+  model sees the field's label, and `[hidden]` instead of its value. On
+  Windows, UI Automation's own `IsPassword` flag masks a control in
+  `windows_list_controls` and blocks `windows_read_control_text` on it. See
+  `secret_fields.py`.
+- With `DECIDER=hybrid`, browser and Windows-window steps are also sent to
+  TypeSafe (task, page URL/title/visible text or the window's control
+  list, element labels -- the same data the LLM sees, secret fields and
+  password boxes already masked). Jev only *chooses* among the page's
+  own elements; every choice goes through the same risk tiers and `[y/n]`
+  confirmations as the LLM's, and anything Jev is unsure of, or can't
+  express (a URL, Excel values, a login page, the final answer), is decided
+  by the LLM instead.
 - No password, API key, cookie, or session token is ever written to a log
   file (`logger.py` also redacts anything that looks like a secret as a
   defense in depth).
@@ -572,6 +655,31 @@ models later -- nothing else in the code references a specific provider.
 
 ## Cost awareness
 
+**Default since 2026-09-25: `deepseek` / `deepseek-flash`** (see
+ARCHITECTURE_DECISIONS.md §2a). For tasks involving private information,
+switch to `anthropic` / `claude-sonnet-5`.
+
+**Choosing a cheaper model.** Measured on this agent (2026-09-24 evals): a
+Claude step sends ~6,600 tokens, ~84% of them cached, and gets ~100 back.
+At September 2026 list prices that's roughly, per step:
+
+| `LLM_PROVIDER` / `LLM_MODEL` | Per step | vs. Sonnet 5 |
+|---|---|---|
+| `anthropic` / `claude-sonnet-5` (default) | ~$0.0042 | 100% |
+| `anthropic` / `claude-haiku-4-5` | ~$0.0021 | 50% (but failed 2/9 evals and took more steps) |
+| `openai` / `gpt-5-mini` | ~$0.0006 + its thinking tokens | ~15-30% |
+| `gemini` / `gemini-3.1-flash-lite-preview` | ~$0.0006 | ~13% |
+| `deepseek` / `deepseek-flash` | ~$0.0005 (half off-peak) | ~6-11%; **measured 2026-09-25: 11/11 evals, ~90% cheaper and 20% faster than Sonnet** |
+
+Cheaper models tend to take more steps or fail more, so compare them on the
+eval suite before switching: `python evals/run_evals.py --save
+evals/results/<model>.json` and keep the one that passes everything at the
+lowest real cost. Privacy: whichever provider you pick receives the task and
+the page/window text on every step it decides (secret fields are masked);
+DeepSeek's servers are in China. `DECIDER=hybrid` already moves click/type
+steps to Jev (~$0.0002 per step), so the cheaper model only replaces the
+steps the LLM still decides.
+
 - `MAX_STEPS` hard-caps how many LLM calls a single task can make.
 - Only a compact, text-only observation (not a screenshot, not full HTML)
   is sent per step, capped at `MAX_DOM_CHARS` characters.
@@ -579,6 +687,13 @@ models later -- nothing else in the code references a specific provider.
   context without resending the whole conversation.
 - If the model repeats the exact same action 3 times in a row, the agent
   assumes it's stuck and stops rather than burning further API calls.
+- With `LLM_PROVIDER=anthropic`, the system prompt and tool definitions
+  (about 2.5-4k tokens, the same on every step) are prompt-cached: from the
+  second step of a task on, that part is billed at about a tenth of the
+  normal input price. Caching needs at least 1,024 prompt tokens on
+  `claude-sonnet-5` but 4,096 on `claude-haiku-4-5`, so on Haiku it usually
+  doesn't kick in. `output/*.json`'s `token_usage` shows it as
+  `cache_read_input_tokens` / `cache_creation_input_tokens`.
 
 ## Error handling
 

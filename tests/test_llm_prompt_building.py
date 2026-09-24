@@ -141,3 +141,13 @@ def test_missing_args_key_defaults_to_empty_dict():
     result = client.decide_next_action("A task.", [], None)
 
     assert result["args"] == {}
+
+
+def test_system_prompt_requires_evidence_from_this_tasks_own_actions():
+    # First voice run: Notepad reopened an old "Hello World" tab and the
+    # model reported the task done without typing anything.
+    from llm import SYSTEM_PROMPT
+
+    assert "THIS task's ACTION HISTORY" in SYSTEM_PROMPT
+    assert "reopens earlier tabs" in SYSTEM_PROMPT
+    assert "windows_click_controls" in SYSTEM_PROMPT

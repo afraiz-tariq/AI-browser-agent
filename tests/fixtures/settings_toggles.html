@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head><title>Display settings</title></head>
+<body>
+  <h1>Display settings</h1>
+  <p>Change the options below, then press Apply settings.</p>
+  <label><input type="checkbox" id="dark"> Dark mode</label><br>
+  <label><input type="checkbox" id="email" checked> Email alerts</label><br>
+  <label><input type="checkbox" id="compact"> Compact view</label><br>
+  <label><input type="checkbox" id="sounds" checked> Notification sounds</label><br>
+  <button id="apply">Apply settings</button>
+  <p id="result"></p>
+  <script>
+    // The code encodes the real checkbox states at the moment Apply is
+    // pressed, so an eval can verify the clicks, not just the model's claim.
+    document.getElementById('apply').addEventListener('click', () => {
+      const bit = id => document.getElementById(id).checked ? '1' : '0';
+      document.getElementById('result').textContent =
+        'Settings applied. Confirmation code: D' + bit('dark') + '-E' + bit('email') +
+        '-C' + bit('compact') + '-S' + bit('sounds');
+    });
+  </script>
+</body>
+</html>

@@ -12,6 +12,160 @@ ARCHITECTURE_DECISIONS.md when a change touches them. One or two plain-
 sentence bullets per change is enough; this isn't meant to restate the
 full commit message.
 
+## 2026-09-25
+
+- DeepSeek (`deepseek-flash`) is now the default in `.env.example`, by the
+  user's choice after it matched Sonnet on the evals at ~10% of the cost.
+  Anthropic stays supported (ARCHITECTURE_DECISIONS.md §2a).
+
+## 2026-09-24
+
+- DeepSeek measured (2026-09-25, `deepseek-flash`, hybrid): 11/11 evals
+  passed, 81 s vs Sonnet's 101 s, ~$0.012 vs ~$0.114 for the run. See
+  `evals/README.md`.
+
+- Corrected the documented DeepSeek model name to `deepseek-flash` (the API
+  rejected `deepseek-v4.1-flash`, listing `deepseek-flash`, `deepseek-v4-pro`).
+  An unknown model name now gets its own plain explanation and stops the
+  eval run early; the eval report says "the LLM" rather than "Claude".
+
+- First DeepSeek eval: the key worked but the account had no balance (402)
+  on every task. The eval runner now stops at the first no-credit /
+  rejected-key failure, and OpenAI-compatible errors name the real host
+  (e.g. `api.deepseek.com`) instead of just "OpenAI".
+
+- Cheaper LLM providers: `LLM_PROVIDER=deepseek`, `gemini` or `openrouter`
+  (plus `OPENAI_BASE_URL` for any OpenAI-compatible server), via the
+  existing OpenAI provider. A setting a model rejects (e.g. GPT-5's
+  temperature) is dropped and the request retried; DeepSeek's thinking mode
+  is off; cached tokens are counted the same way for every provider. README
+  "Cost awareness" has the measured per-step cost comparison.
+
+- LLM failures are explained in plain words: out of credit (with where to
+  add it), rejected key, service busy. An empty Anthropic credit balance
+  had been reported as "could not be reached ... check your internet".
+
+- Voice mode now prints a failed task's full explanation on screen; a
+  failed LLM call had only been spoken as "could not be reached", hiding
+  the actual API error.
+
+- Re-run on the user's PC after the bug-13 fixes: "open notepad and write
+  hello world" now really types and verifies; "sum 3 plus 2" took 5 steps
+  (one `windows_click_controls` for 3, +, 2, =) instead of 16 and answered
+  "3 plus 2 is 5." Follow-up: `windows_type_into_control` now reports the
+  read-back text and a renamed window title (typing renamed "Untitled -
+  Notepad" to "*hello world - Notepad", costing two extra steps to re-find
+  it); pywinauto's harmless STA COM warning is silenced in voice.py.
+
+- Fixes from the first voice runs (ARCHITECTURE_DECISIONS.md §1, bug 13):
+  the model must now report only what this task itself did (Notepad's
+  restored "Hello World" tab had been claimed as done); new
+  `windows_click_controls` presses a known sequence (3, +, 2, =) in one
+  step; Jev's floor in app windows is 0.8 (its wrong Calculator picks were
+  at ~0.6); spoken replies are one short sentence.
+
+- Voice quick commands (`quick_commands.py`): "open notepad", "go to
+  youtube", "search youtube for ...", "volume up", "pause", "next track"
+  and similar one-step requests run directly in well under a second
+  instead of a full agent run (~5 s). An exact-phrase matcher first, then
+  one Jev request for other phrasings (>= `QUICK_MIN_CONFIDENCE`);
+  anything else runs the full agent. Apps open only if the Windows arm's
+  own risk check says R0 (`SAFE_APPS`); URLs are built by code; media keys
+  classified R0 explicitly.
+
+- First working voice run ("open notepad": heard, launched, answered).
+  At the user's request, opening a safe-listed app (`SAFE_APPS`, default
+  Notepad/Calculator/Paint/Snipping Tool/Explorer) by bare name with no
+  arguments no longer asks `[y/n]`; any path, arguments or other app still
+  does. Voice now says it's listening for a yes/no (no key needed) instead
+  of "still working" when the key is pressed during a confirmation.
+
+- Voice push-to-talk no longer uses pynput: on the user's PC its keyboard
+  hook received no key presses at all (`--keys` printed nothing), while the
+  microphone and speech model worked (`--mic-test` heard "open notepad").
+  Keys are now read by polling Windows' `GetAsyncKeyState` ~50x/s: no hook,
+  no extra package, no admin rights. pynput is no longer needed.
+
+- Voice troubleshooting after the first real try (holding the key did
+  nothing): `python voice.py --keys` shows which keys the program sees,
+  `--mic-test` checks the microphone + speech model without the keyboard, a
+  microphone that fails to start now says so, and the harmless Hugging Face
+  symlink warning is silenced.
+
+- Second live hybrid run (Jev in Windows apps too): 11/11 passed, whole
+  suite 101 s vs 169 s Claude-only; Calculator 24.5 s -> 13.3 s. See
+  `evals/README.md`.
+
+- Added the voice front-end (`python voice.py`): hold right Ctrl to speak a
+  task, local speech-to-text (faster-whisper, audio never leaves the PC),
+  results spoken via Windows SAPI, spoken confirmations where only a plain
+  "yes"/"confirm" continues, and a stop key (F10). `run_task()` gained an
+  optional `should_stop` checked before each step and before each action.
+  Logic tested offline with fakes; the microphone/model/speaker path needs
+  a real run on Windows.
+
+- Jev now also decides steps inside Windows app windows (`DECIDER=hybrid`):
+  click a control, type a span of the task into one, or re-read the window's
+  controls, always by the exact title from the latest listing; password
+  boxes are never targets. Jev is now only asked when the task is on a page
+  or in a just-listed window (no more wasted calls after Excel/launch
+  steps), can scroll pages that have no controls, and reuses one TypeSafe
+  connection across tasks. Offline-tested; not yet measured live.
+
+- First live claude-vs-hybrid comparison (Sonnet 5, 11 tasks, user's PC):
+  hybrid 11/11 vs 10/11, total time -18%, decision wait -29%, Jev steps
+  median 272 ms vs ~2.2 s for Claude, Jev cost ~$0.0007. See
+  `evals/README.md`.
+
+- Added the optional TypeSafe Jev decider (`jev.py`, `DECIDER=hybrid`, off by
+  default): Jev picks browser click / type / scroll steps from the page's own
+  elements in one request; Claude decides everything else and any step Jev
+  is unsure of, can't express, or can't reach. Text to type is only ever a
+  span of the user's own task. Jev choices go through the same risk tiers
+  and confirmations. 27 offline tests with TypeSafe simulated. Not yet run
+  against the live API.
+- `observe()` now names elements by their `<label>` / `aria-labelledby`
+  text: wrapped checkboxes previously read as `''`, so neither model could
+  tell them apart.
+- Two click-heavy eval tasks (`browser_settings_toggles`,
+  `browser_trip_wizard`) whose pages emit a code from the real control
+  states, for a fair claude-vs-hybrid comparison.
+
+- Recorded the first live speed/cost baseline (claude-sonnet-5, user's PC):
+  9/9 evals passed; median step = 2.3 s Claude decision + 53 ms page read +
+  21 ms action; prompt cache served 84% of prompt tokens; ~$0.15 for the
+  run. See `evals/README.md` and `evals/results/`.
+
+- Anthropic calls now prompt-cache the system prompt + tool definitions
+  (~2.6k tokens, ~3.8k with the Windows arm; identical every step), so steps
+  after the first bill that part at ~0.1x input price. Token usage now also
+  records cache reads/writes, since the SDK's `input_tokens` excludes cached
+  tokens. Not yet measured live (needs an API key): check
+  `cache_read_input_tokens` > 0 in `output/*.json` after a multi-step task.
+
+- `observe()` now reads the whole page in one in-page snapshot instead of
+  ~7 Playwright round trips per element: 41-59x faster on the generated
+  benchmark pages (50 elements: 1,169 -> 29 ms; 200: 4,352 -> 74 ms; 500:
+  10,807 -> 208 ms, median of 10, headless Chromium in the dev container).
+  Output checked identical, old vs new, on all 12 test fixtures plus the
+  benchmark pages and an edge-case page (display:contents, hidden/collapsed,
+  closed <details>, zero-size). New `evals/bench_observe.py` reproduces the
+  numbers offline.
+- Every output record now has a `timings` block (per-step observe/decide/act
+  ms, with human [y/n] wait excluded, plus medians), and
+  `evals/run_evals.py` reports them and can `--save` a JSON baseline. Part of
+  Phase 0 of `docs/JEV_VOICE_PLAN.md`; the live Claude baseline itself still
+  needs a run with a real API key.
+
+- Fixed secret field values being able to reach the LLM: a pre-filled
+  password input with no label had its password used as its label in the
+  prompt. Both arms now mask password/PIN/card/token fields (browser:
+  `type=password`, autocomplete tokens, secret-sounding labels; Windows: UIA
+  `IsPassword`) via the new shared `secret_fields.py`. See
+  ARCHITECTURE_DECISIONS.md §1, bug 12.
+
+- Added `docs/JEV_VOICE_PLAN.md`: a phased, additive plan for TypeSafe Jev decisions (with Claude escalation) and Windows voice control, based on a study of Rocky, jev-ultrafast, jev-voice and typesafe-computer-use. A proposal only; no code changed.
+
 ## 2026-09-09
 
 - Fixed `windows_type_into_control` still producing corrupted text

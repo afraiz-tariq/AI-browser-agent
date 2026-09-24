@@ -31,20 +31,21 @@ class _FakeConfig:
         self.confirm_r1_actions = confirm_r1_actions
 
 
-def test_get_tool_specs_returns_seven_actions_with_expected_static_risk_tiers():
+def test_get_tool_specs_returns_eight_actions_with_expected_static_risk_tiers():
     # windows_click_control's static tier is R0 -- its real risk is dynamic
     # (see get_dynamic_risk() tests below), mirroring browser.py's click.
     specs = {s.name: s for s in WindowsToolProvider(WindowsSession()).get_tool_specs()}
     assert set(specs) == {
         "windows_launch_app", "windows_list_windows", "windows_list_controls",
-        "windows_click_control", "windows_type_into_control", "windows_read_control_text",
-        "windows_close_window",
+        "windows_click_control", "windows_click_controls", "windows_type_into_control",
+        "windows_read_control_text", "windows_close_window",
     }
     expected_tiers = {
         "windows_launch_app": "R2",
         "windows_list_windows": "R0",
         "windows_list_controls": "R0",
         "windows_click_control": "R0",
+        "windows_click_controls": "R0",  # dynamic, like windows_click_control
         "windows_type_into_control": "R1",
         "windows_read_control_text": "R0",
         "windows_close_window": "R2",
@@ -131,7 +132,9 @@ def test_get_dynamic_risk_detects_a_windows_specific_keyword_not_in_browsers_lis
 def test_get_dynamic_risk_returns_none_for_non_click_actions():
     provider = WindowsToolProvider(WindowsSession())
     assert provider.get_dynamic_risk("windows_type_into_control", {"window_title": "x", "index": 0}) is None
-    assert provider.get_dynamic_risk("windows_launch_app", {"path": "notepad.exe"}) is None
+    # notepad.exe is on the default safe-app list (R0) since 2026-09-24; an
+    # app that isn't still gets no dynamic override -> its static R2.
+    assert provider.get_dynamic_risk("windows_launch_app", {"path": "powershell.exe"}) is None
     assert provider.get_dynamic_risk("windows_close_window", {"window_title": "x"}) is None
 
 
@@ -358,3 +361,198 @@ def test_close_window_clears_its_stored_controls(monkeypatch):
     fake_window.close.assert_called_once()
     assert "Untitled - Notepad" not in session._last_controls
     assert "Untitled - Notepad" in result
+
+
+def _password_ctrl(text="hunter2-SECRET"):
+    ctrl = MagicMock()
+    ctrl.friendly_class_name.return_value = "Edit"
+    ctrl.window_text.return_value = text
+    ctrl.element_info.element.CurrentIsPassword = True
+    return ctrl
+
+
+def test_list_controls_masks_a_password_control(monkeypatch):
+    import pywinauto.application
+
+    fake_window = MagicMock()
+    fake_window.descendants.return_value = [_password_ctrl()]
+    fake_app = MagicMock()
+    fake_app.connect.return_value = fake_app
+    fake_app.window.return_value = fake_window
+    monkeypatch.setattr(pywinauto.application, "Application", MagicMock(return_value=fake_app))
+
+    result = WindowsSession().execute("windows_list_controls", {"window_title": "Sign in"})
+
+    assert "SECRET" not in result
+    assert "[0] Edit (password field)" in result
+
+
+def test_read_control_text_refuses_a_password_control():
+    session = WindowsSession()
+    ctrl = _password_ctrl()
+    session._last_controls["Sign in"] = [ctrl]
+
+    result = session.execute("windows_read_control_text", {"window_title": "Sign in", "index": 0})
+
+    assert "SECRET" not in result
+    assert "password field" in result
+    ctrl.window_text.assert_not_called()
+
+
+def test_is_password_control_ignores_an_unreadable_or_non_bool_flag():
+    # A plain MagicMock's CurrentIsPassword is itself a (truthy) MagicMock --
+    # only a real True may count, or every mocked/older control would be
+    # treated as a password field and hidden from the model.
+    assert windows_tools._is_password_control(MagicMock()) is False
+    broken = MagicMock()
+    type(broken).element_info = property(lambda self: (_ for _ in ()).throw(RuntimeError("no UIA")))
+    assert windows_tools._is_password_control(broken) is False
+    assert windows_tools._is_password_control(_password_ctrl()) is True
+
+
+def _fake_app(monkeypatch, controls):
+    import pywinauto.application
+
+    fake_window = MagicMock()
+    fake_window.descendants.return_value = controls
+    fake_app = MagicMock()
+    fake_app.connect.return_value = fake_app
+    fake_app.window.return_value = fake_window
+    monkeypatch.setattr(pywinauto.application, "Application", MagicMock(return_value=fake_app))
+
+
+def test_list_controls_records_a_structured_listing_for_the_jev_decider(monkeypatch):
+    # jev.py (DECIDER=hybrid) picks a control from this instead of parsing
+    # the text result; password controls are flagged and their text masked.
+    button = MagicMock()
+    button.friendly_class_name.return_value = "Button"
+    button.window_text.return_value = "Seven"
+    _fake_app(monkeypatch, [button, _password_ctrl()])
+
+    session = WindowsSession()
+    session.execute("windows_list_controls", {"window_title": "Calculator"})
+
+    assert session.last_listing == ("Calculator", [
+        {"i": 0, "type": "Button", "text": "Seven", "password": False},
+        {"i": 1, "type": "Edit", "text": "[hidden]", "password": True},
+    ])
+
+
+def test_launch_and_close_clear_the_listing_so_jev_never_picks_from_a_stale_window(monkeypatch):
+    session = WindowsSession()
+    session.last_listing = ("Calculator", [{"i": 0, "type": "Button", "text": "Seven", "password": False}])
+    _fake_app(monkeypatch, [])
+    session.execute("windows_launch_app", {"path": "notepad.exe"})
+    assert session.last_listing is None
+
+    session.last_listing = ("Calculator", [])
+    session.execute("windows_close_window", {"window_title": "Some Other Window"})
+    assert session.last_listing == ("Calculator", [])  # closing a different window keeps it
+    session.execute("windows_close_window", {"window_title": "Calculator"})
+    assert session.last_listing is None
+
+
+# --- safe-app launches (asked for after the first voice run) ----------------
+
+@pytest.mark.parametrize("args", [
+    {"path": "notepad.exe"},
+    {"path": "notepad"},             # ".exe" added
+    {"path": "Calc.EXE", "args": ""},
+])
+def test_plain_launch_of_a_safe_app_does_not_confirm(args):
+    provider = WindowsToolProvider(WindowsSession())
+    assert provider.get_dynamic_risk("windows_launch_app", args) == "R0"
+    assert requires_confirmation("R0", _FakeConfig()) is False
+
+
+@pytest.mark.parametrize("args", [
+    {"path": "notepad.exe", "args": "C:\\secret.txt"},           # arguments -> still asks
+    {"path": "cmd.exe", "args": "/c del *"},                      # not on the list
+    {"path": "C:\\Users\\me\\Downloads\\notepad.exe"},            # a path, possibly a look-alike
+    {"path": "..\\notepad.exe"},
+    {"path": "powershell.exe"},
+])
+def test_any_other_launch_keeps_the_static_r2(args):
+    provider = WindowsToolProvider(WindowsSession())
+    assert provider.get_dynamic_risk("windows_launch_app", args) is None  # -> static R2, confirms by default
+
+
+def test_safe_app_list_is_configurable_and_can_be_emptied():
+    custom = WindowsToolProvider(WindowsSession(), safe_apps=frozenset({"winword"}))
+    assert custom.get_dynamic_risk("windows_launch_app", {"path": "winword.exe"}) == "R0"
+    assert custom.get_dynamic_risk("windows_launch_app", {"path": "notepad.exe"}) is None
+    none = WindowsToolProvider(WindowsSession(), safe_apps=frozenset())
+    assert none.get_dynamic_risk("windows_launch_app", {"path": "notepad.exe"}) is None
+
+
+# --- windows_click_controls: several clicks in one step ----------------------
+
+def _labelled(text):
+    ctrl = MagicMock()
+    ctrl.window_text.return_value = text
+    return ctrl
+
+
+def test_click_controls_clicks_in_order_in_one_step():
+    session = WindowsSession()
+    keys = [_labelled("Three"), _labelled("Plus"), _labelled("Two"), _labelled("Equals")]
+    session._last_controls["Calculator"] = keys
+    order = []
+    for k in keys:
+        k.invoke.side_effect = lambda k=k: order.append(k.window_text())
+
+    result = session.execute("windows_click_controls", {"window_title": "Calculator", "indices": [0, 1, 2, 3]})
+
+    assert order == ["Three", "Plus", "Two", "Equals"]
+    assert "'Three', #1 'Plus', #2 'Two', #3 'Equals'" in result
+
+
+def test_click_controls_stops_at_the_first_failure_and_says_what_was_done():
+    session = WindowsSession()
+    session._last_controls["Calculator"] = [_labelled("Three"), _labelled("Plus")]
+
+    with pytest.raises(WindowsAutomationError) as e:
+        session.execute("windows_click_controls", {"window_title": "Calculator", "indices": [0, 7, 1]})
+
+    assert "#7" in str(e.value) and "#0 'Three'" in str(e.value)
+    session._last_controls["Calculator"][1].invoke.assert_not_called()  # nothing after the failure
+
+
+def test_click_controls_is_risky_if_any_control_in_the_sequence_is():
+    session = WindowsSession()
+    session._last_controls["App"] = [_labelled("Next"), _labelled("Delete everything")]
+    provider = WindowsToolProvider(session)
+    assert provider.get_dynamic_risk("windows_click_controls", {"window_title": "App", "indices": [0]}) is None
+    assert provider.get_dynamic_risk("windows_click_controls", {"window_title": "App", "indices": [0, 1]}) == "R2"
+    desc = provider.describe_for_confirmation("windows_click_controls", {"window_title": "App", "indices": [0, 1]})
+    assert "'Next'" in desc and "'Delete everything'" in desc
+
+
+def test_typing_reports_the_read_back_text_and_a_renamed_window(monkeypatch):
+    # User's PC: typing renamed "Untitled - Notepad" to "*hello world -
+    # Notepad"; the model then wasted two steps re-finding the window.
+    monkeypatch.setattr("windows_tools.time.sleep", lambda *a, **k: None)
+    session = WindowsSession()
+    doc = MagicMock()
+    doc.window_text.return_value = "hello world"
+    doc.top_level_parent.return_value.window_text.return_value = "*hello world - Notepad"
+    doc.element_info.element.CurrentIsPassword = False
+    session._last_controls["Untitled - Notepad"] = [doc]
+    session.last_listing = ("Untitled - Notepad", [{"i": 0, "type": "Document", "text": "", "password": False}])
+
+    result = session.execute("windows_type_into_control",
+                             {"window_title": "Untitled - Notepad", "index": 0, "text": "hello world"})
+
+    assert "title is now '*hello world - Notepad'" in result
+    assert "Read back from the control: 'hello world'" in result
+    assert session._last_controls["*hello world - Notepad"] == [doc]  # the next call with the new title works
+    assert session.last_listing[0] == "*hello world - Notepad"
+
+
+def test_typing_into_a_password_box_never_reads_it_back(monkeypatch):
+    monkeypatch.setattr("windows_tools.time.sleep", lambda *a, **k: None)
+    session = WindowsSession()
+    box = _password_ctrl("s3cret-SECRET")
+    session._last_controls["Sign in"] = [box]
+    result = session.execute("windows_type_into_control", {"window_title": "Sign in", "index": 0, "text": "x"})
+    assert "SECRET" not in result and "Read back" not in result

@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
+import statistics
 import time
 from datetime import datetime
 from pathlib import Path
@@ -31,7 +33,7 @@ from browser import BrowserSession, BrowserToolProvider
 from config import OUTPUT_DIR, load_config
 from errors import TaskCannotBeCompleted, explain
 from excel_tools import ExcelSession, ExcelToolProvider
-from llm import LLMClient, LLMError
+from llm import ZERO_USAGE, LLMClient, LLMError
 from logger import TaskLogger
 from mcp_tools import MCPToolProvider, build_brave_search_provider, build_fetch_provider, build_filesystem_provider
 from tool_provider import ToolProvider, ToolSpec, requires_confirmation
@@ -98,6 +100,7 @@ def offer_manual_resolution(url: str, config, dry_run: bool, logger: TaskLogger,
 def run_task(
     task: str, config, dry_run: bool = False, llm_client: LLMClient | None = None,
     confirm_callback: Callable[[str], bool] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict:
     """
     Runs one task end-to-end and returns a result dict. Also writes a log
@@ -112,11 +115,27 @@ def run_task(
     (discord_bot.py) passes its own str -> bool callable instead -- e.g. one
     that posts the question into a chat and blocks for a reply there,
     rather than blocking on a terminal that isn't attached.
+
+    `should_stop`, if given, is checked before each step and again right
+    before an action runs; when it returns True the task stops cleanly with
+    a "stopped by you" failure. voice.py wires its stop key to it -- the
+    spoken equivalent of Ctrl+C that doesn't kill the whole program.
     """
     logger = TaskLogger(Path(__file__).parent / "logs", task)
-    confirm = confirm_callback or ask_confirmation
+    user_confirm = confirm_callback or ask_confirmation
+    # Time spent waiting on a human to answer [y/n] is not agent speed, so
+    # it's measured separately and subtracted from the step's act time.
+    confirm_wait = {"ms": 0.0}
+
+    def confirm(prompt: str) -> bool:
+        started = time.perf_counter()
+        try:
+            return user_confirm(prompt)
+        finally:
+            confirm_wait["ms"] += (time.perf_counter() - started) * 1000
     session = BrowserSession(config)  # Chrome itself isn't launched until first use -- see BrowserToolProvider.ensure_ready
     excel_session = ExcelSession()
+    windows_session: WindowsSession | None = None  # set below only if ENABLE_WINDOWS_AUTOMATION
     mcp_providers: list[MCPToolProvider] = []  # only non-empty per ENABLE_MCP_* flags -- closed in the finally below
 
     history: list[str] = []
@@ -135,6 +154,11 @@ def run_task(
     # it was, since discord_bot.py and the tests depend on that shape).
     artifacts: list[dict] = []
     verification_warnings: list[str] = []
+    # Per-step wall-clock timings (observe / decide / act, in ms) for the
+    # structured output record -- the baseline docs/JEV_VOICE_PLAN.md's
+    # Phase 0 measures before any speed work. A phase a step never reached
+    # (e.g. no browser page open yet, or a rejected finish) is left out.
+    step_timings: list[dict] = []
 
     try:
         # One ToolProvider per arm, registered by tool name -- this is the
@@ -158,7 +182,9 @@ def run_task(
             # No subprocess/thread of its own (unlike the MCP arms above),
             # so no close()/cleanup path is needed in the finally below --
             # see WindowsSession's docstring.
-            providers.append(WindowsToolProvider(WindowsSession()))
+            windows_session = WindowsSession()
+            safe_apps = frozenset(a for a in config.safe_apps.split(",") if a.strip())
+            providers.append(WindowsToolProvider(windows_session, safe_apps=safe_apps))
 
         tool_specs: list[ToolSpec] = []
         tool_owner: dict[str, ToolProvider] = {}
@@ -178,9 +204,23 @@ def run_task(
                 "folders like OneDrive Desktop won't match a guess and will fail with a permission or not-found " \
                 "error):\n" + "\n".join(f"- {label}: {path}" for label, path in known_folders.items())
             llm = LLMClient.from_config(config, tool_specs, facts)
+            if config.decider == "hybrid":
+                # Jev picks browser click/type/scroll steps; the Claude client
+                # just built decides everything else. See jev.py.
+                from jev import JevDecider, shared_client
+
+                llm = JevDecider(
+                    llm, shared_client(config.typesafe_api_key, config.typesafe_model),
+                    min_confidence=config.jev_min_confidence,
+                    windows_listing=(lambda: windows_session.last_listing) if windows_session else None,
+                    windows_min_confidence=config.jev_min_confidence_windows,
+                )
 
         for step in range(1, config.max_steps + 1):
             steps_taken = step
+            _check_stop(should_stop)
+            timing: dict = {"step": step}
+            step_timings.append(timing)
             # OBSERVE only applies to the browser arm. Before the browser
             # has been used at all (session.page is None -- e.g. an
             # Excel-only task, or a mixed task that hasn't reached a
@@ -191,7 +231,9 @@ def run_task(
                 observation = None
             else:
                 try:
+                    started = time.perf_counter()
                     observation = session.observe(max_chars=config.max_dom_chars)
+                    timing["observe_ms"] = round((time.perf_counter() - started) * 1000, 1)
                 except Exception as e:
                     raise TaskCannotBeCompleted(
                         explain(
@@ -266,17 +308,18 @@ def run_task(
                 )
 
             try:
+                started = time.perf_counter()
                 decision = llm.decide_next_action(task, history, observation)
+                timing["decide_ms"] = round((time.perf_counter() - started) * 1000, 1)
             except LLMError as e:
-                raise TaskCannotBeCompleted(
-                    explain(
-                        "The AI model could not be reached or gave an unusable reply.",
-                        str(e),
-                        "Check your API key and LLM_PROVIDER/LLM_MODEL in .env, and your internet connection.",
-                    )
-                ) from e
+                raise TaskCannotBeCompleted(_explain_llm_error(e)) from e
 
             action = decision.get("action", "")
+            timing["action"] = action
+            if "decider" in decision:  # only set by jev.JevDecider (DECIDER=hybrid)
+                timing["decider"] = decision["decider"]
+                if decision.get("escalation_reason"):
+                    logger.note(f"Claude decided this step: {decision['escalation_reason']}")
             args = decision.get("args", {}) or {}
             thought = decision.get("thought", "")
             current_url = observation.url if observation is not None else "(no browser page open)"
@@ -353,10 +396,19 @@ def run_task(
                 # The model already has the visible text; nothing to execute.
                 continue
 
+            _check_stop(should_stop)  # the decision above can take seconds; honor a stop pressed meanwhile
+            act_started = time.perf_counter()
+            confirm_wait["ms"] = 0.0
             try:
-                result_text = _dispatch_action(
-                    tool_owner, tool_spec_by_name, action, args, config, dry_run, confirm
-                )
+                try:
+                    result_text = _dispatch_action(
+                        tool_owner, tool_spec_by_name, action, args, config, dry_run, confirm
+                    )
+                finally:
+                    elapsed = (time.perf_counter() - act_started) * 1000
+                    timing["act_ms"] = round(elapsed - confirm_wait["ms"], 1)
+                    if confirm_wait["ms"]:
+                        timing["confirm_wait_ms"] = round(confirm_wait["ms"], 1)
             except IndexError as e:
                 logger.error(str(e))
                 history[-1] += " [FAILED: invalid element index]"
@@ -426,6 +478,8 @@ def run_task(
     finally:
         session.stop()
         excel_session.close()
+        if hasattr(llm, "close"):
+            llm.close()
         for provider in mcp_providers:
             provider.close()
 
@@ -438,9 +492,10 @@ def run_task(
         verification_warnings=verification_warnings,
         # llm can still be None if provider/tool-spec construction itself
         # raised before it was ever assigned (e.g. an MCP server failed to
-        # start) -- no LLM calls happened in that case, so {0, 0} is the
+        # start) -- no LLM calls happened in that case, so all zeros is the
         # honest answer, not a missing one.
-        token_usage=llm.get_usage() if llm is not None else {"input_tokens": 0, "output_tokens": 0},
+        token_usage=llm.get_usage() if llm is not None else dict(ZERO_USAGE),
+        timings=summarize_timings(step_timings),
     )
 
     if error_message:
@@ -449,6 +504,63 @@ def run_task(
 
     logger.finish(result_summary or "(empty result)")
     return {"success": True, "result": result_summary, "output_path": str(output_path)}
+
+
+def _explain_llm_error(error: Exception) -> str:
+    """A plain explanation for the common, fixable LLM failures. Found on the
+    user's PC: an exhausted API credit balance was reported as "could not be
+    reached... check your API key and internet connection", which sent them
+    looking in the wrong place -- and in voice mode only that headline is
+    spoken. Matches the SDKs' "Error code: NNN" status, not stray digits
+    (request ids contain numbers too)."""
+    text = str(error)
+    lowered = text.lower()
+    status = re.search(r"error code: (\d{3})", lowered)
+    code = status.group(1) if status else ""
+    if code == "402" or any(s in lowered for s in (
+            "credit balance", "billing", "insufficient_quota", "insufficient balance")):
+        return explain(
+            "Your AI provider account has run out of credit.",
+            text,
+            "Add credit in your provider's billing settings (Anthropic: console.anthropic.com, Settings > "
+            "Billing; DeepSeek: platform.deepseek.com; OpenAI: platform.openai.com), then try again. Voice "
+            "quick commands keep working meanwhile.",
+        )
+    if code in ("401", "403") or "authentication" in lowered or "invalid x-api-key" in lowered:
+        return explain(
+            "Your AI provider rejected the API key.",
+            text,
+            "Check the API key for your LLM_PROVIDER in .env (no extra spaces or quotes).",
+        )
+    if code in ("400", "404") and "model" in lowered and any(s in lowered for s in (
+            "supported", "not found", "does not exist", "invalid model", "unknown model")):
+        return explain(
+            "Your AI provider doesn't know the model name in LLM_MODEL.",
+            text,
+            "Set LLM_MODEL in .env to a name this provider lists (the WHY line above often names them).",
+        )
+    if code in ("429", "529") or "overloaded" in lowered or "rate_limit" in lowered:
+        return explain(
+            "The AI service is busy right now.",
+            text,
+            "Wait a minute and try again.",
+        )
+    return explain(
+        "The AI model could not be reached or gave an unusable reply.",
+        text,
+        "Check your API key and LLM_PROVIDER/LLM_MODEL in .env, and your internet connection.",
+    )
+
+
+def _check_stop(should_stop: Callable[[], bool] | None) -> None:
+    if should_stop is not None and should_stop():
+        raise TaskCannotBeCompleted(
+            explain(
+                "Stopped by you.",
+                "The stop key was pressed, so no further actions were taken.",
+                "Anything already done before the stop (e.g. a page opened) stays as it is.",
+            )
+        )
 
 
 def _dispatch_action(
@@ -498,9 +610,25 @@ def _dispatch_action(
     return provider.execute(action, args)
 
 
+def summarize_timings(step_timings: list[dict]) -> dict:
+    """Per-step timings plus the medians the Phase 0 baseline compares
+    (docs/JEV_VOICE_PLAN.md). A median is None when no step reached that
+    phase (e.g. an Excel-only task never observes a page)."""
+    def median(key: str) -> float | None:
+        values = [t[key] for t in step_timings if key in t]
+        return round(statistics.median(values), 1) if values else None
+
+    return {
+        "median_observe_ms": median("observe_ms"),
+        "median_decide_ms": median("decide_ms"),
+        "median_act_ms": median("act_ms"),
+        "steps": step_timings,
+    }
+
+
 def _save_output(
     task: str, status: str, summary: str, steps_taken: int, artifacts: list[dict], verification_warnings: list[str],
-    token_usage: dict[str, int],
+    token_usage: dict[str, int], timings: dict | None = None,
 ) -> Path:
     """
     Structured result contract (ARCHITECTURE_DECISIONS.md section 4):
@@ -509,9 +637,11 @@ def _save_output(
     did, not only a record of what it said at the end. `summary` is the
     final answer on success, or the same human-readable explanation
     returned as outcome["result"] on failure. `token_usage` is
-    {"input_tokens", "output_tokens"} accumulated across every real LLM
-    call this task made (see LLMClient.get_usage()) -- {0, 0} for a
+    LLMClient.get_usage()'s input/output/cache token counts accumulated
+    across every real LLM call this task made -- all zeros for a
     MockProvider-driven run, which is accurate, not a placeholder.
+    `timings` is summarize_timings()'s per-step observe/decide/act ms, with
+    time spent waiting on a human [y/n] answer excluded from act.
     """
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     path = OUTPUT_DIR / f"{stamp}.json"
@@ -523,6 +653,7 @@ def _save_output(
         "artifacts": artifacts,
         "verification_warnings": verification_warnings,
         "token_usage": token_usage,
+        "timings": timings or summarize_timings([]),
         "saved_at": datetime.now().isoformat(),
     }
     path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")

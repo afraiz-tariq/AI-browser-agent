@@ -8,6 +8,8 @@ internet access to a real search engine.
 import json
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent import run_task
 from llm import LLMClient, MockProvider
 
@@ -300,3 +302,39 @@ def test_scrolling_lets_the_model_read_past_the_initial_truncation(test_config, 
     assert "SEGMENT-23" not in prompts[1]  # not visible before any scrolling
     assert "SEGMENT-23" in prompts[-1]  # revealed after scrolling down twice
     assert "more text than what's shown" in prompts[1].lower()  # told about the truncation up front
+
+
+@pytest.mark.parametrize("error, headline", [
+    ("Anthropic request failed: Error code: 400 - {'message': 'Your credit balance is too low to access the "
+     "Anthropic API. Please go to Plans & Billing'}", "run out of credit"),
+    ("Anthropic request failed: Error code: 401 - authentication_error invalid x-api-key", "rejected the API key"),
+    ("Anthropic request failed: Error code: 529 - overloaded_error", "busy right now"),
+    ("connection reset", "could not be reached"),
+])
+def test_llm_failures_are_explained_in_plain_words(error, headline):
+    # User's PC: an empty credit balance was reported as "could not be
+    # reached ... check your API key and internet connection".
+    from agent import _explain_llm_error
+
+    message = _explain_llm_error(Exception(error))
+    assert message.startswith("WHAT HAPPENED:") and headline in message.splitlines()[0]
+    assert error in message  # the raw reason is always kept
+
+
+def test_request_id_digits_do_not_change_the_explanation():
+    from agent import _explain_llm_error
+
+    msg = _explain_llm_error(Exception("Error code: 500 - server error, request_id req_4291529402"))
+    assert "could not be reached" in msg.splitlines()[0]
+    assert "run out of credit" in _explain_llm_error(Exception("Error code: 402 - Insufficient Balance"))
+
+
+def test_an_unknown_model_name_is_explained():
+    # Real DeepSeek reply for LLM_MODEL=deepseek-v4.1-flash (a wrong name).
+    from agent import _explain_llm_error
+
+    msg = _explain_llm_error(Exception(
+        "OpenAI request failed (api.deepseek.com): Error code: 400 - {'error': {'message': 'The supported API "
+        "model names are deepseek-flash, deepseek-v4-pro, but you passed deepseek-v4.1-flash.'}}"))
+    assert "doesn't know the model name" in msg.splitlines()[0]
+    assert "deepseek-flash" in msg  # the accepted names stay visible

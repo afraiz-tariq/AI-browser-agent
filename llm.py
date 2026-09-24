@@ -22,6 +22,7 @@ the agent loop's point of view.
 from __future__ import annotations
 
 import json
+import re
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -69,6 +70,16 @@ Rules:
   excel_save when all edits for the task are done, or they're lost.
 - Prefer the simplest path to the goal. Do not repeat an action that already
   failed or had no visible effect -- try something different instead.
+- Only report as done what THIS task's ACTION HISTORY shows you did and then
+  checked. Content that was already there before you acted does not count:
+  Windows 11 Notepad, for example, reopens earlier tabs, so a document
+  already showing the requested text may be left over from a previous run.
+  If the task asks you to type, open, click or change something, do it
+  yourself (in a new, empty document or tab if an old one is showing),
+  then verify it, before calling finish.
+- To press several controls of one window in a known order (e.g.
+  Calculator keys 3, +, 2, =), use windows_click_controls once rather than
+  one click per step.
 - If a webpage shows a login form, a "sign in to continue" wall, a CAPTCHA,
   or 2FA/MFA prompt, call login_required immediately. Never try to guess
   credentials, solve a CAPTCHA, or bypass MFA.
@@ -131,7 +142,7 @@ class BaseLLMProvider(ABC):
         # instance -- one instance lives for the whole task, so this is a
         # per-task running total. Real providers update it from the SDK
         # response's own usage block; MockProvider never touches it, so it
-        # stays {0, 0} for scripted/offline runs, which is the honest answer
+        # stays all zeros for scripted/offline runs, which is the honest answer
         # (no real tokens were spent). Surfaced via LLMClient.get_usage()
         # for the structured output record (see agent.py's _save_output)
         # and the eval harness (evals/run_evals.py) -- "token usage, cost"
@@ -139,42 +150,106 @@ class BaseLLMProvider(ABC):
         # nothing tracked this before.
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        # Prompt-cache traffic (Anthropic only, see AnthropicProvider.decide).
+        # With caching on, the SDK's input_tokens counts only the UNcached
+        # part of the prompt, so without these two the recorded input would
+        # silently shrink and under-state what a step really costs.
+        self.total_cache_read_tokens = 0
+        self.total_cache_creation_tokens = 0
 
-    def _record_usage(self, input_tokens: int | None, output_tokens: int | None) -> None:
+    def _record_usage(
+        self, input_tokens: int | None, output_tokens: int | None,
+        cache_read_tokens: int | None = 0, cache_creation_tokens: int | None = 0,
+    ) -> None:
         self.total_input_tokens += input_tokens or 0
         self.total_output_tokens += output_tokens or 0
+        self.total_cache_read_tokens += cache_read_tokens or 0
+        self.total_cache_creation_tokens += cache_creation_tokens or 0
 
     @abstractmethod
     def decide(self, system: str, user: str) -> dict[str, Any]:
         """Send one turn and return {"action": ..., "thought": ..., "args": {...}}."""
 
 
+# Providers reachable through the OpenAI SDK's Chat Completions API: the
+# cheaper models the similar projects use (Rocky: DeepSeek; jev-ultrafast:
+# OpenRouter; both tested Gemini Flash-Lite). LLM_PROVIDER -> (default base
+# URL, Config attribute holding that provider's key). OPENAI_BASE_URL
+# overrides the URL for any of them, e.g. a local LM Studio / Ollama server.
+OPENAI_COMPATIBLE = {
+    "openai": (None, "openai_api_key"),
+    "deepseek": ("https://api.deepseek.com", "deepseek_api_key"),
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai/", "gemini_api_key"),
+    "openrouter": ("https://openrouter.ai/api/v1", "openrouter_api_key"),
+}
+
+# Request settings some providers or models reject (GPT-5 models accept only
+# the default temperature; not every provider supports forced tool choice).
+# If a 400 names one of these, it's dropped for the rest of the task and the
+# request retried once -- the model still must call a tool (the system
+# prompt says so, and a reply without one is an LLMError as before).
+_DROPPABLE = {"temperature": "temperature", "tool_choice": "tool_choice", "thinking": "extra_body"}
+
+
 class OpenAIProvider(BaseLLMProvider):
-    def __init__(self, api_key: str, model: str, tool_specs: list[ToolSpec], max_retries: int = 2):
+    def __init__(self, api_key: str, model: str, tool_specs: list[ToolSpec], max_retries: int = 2,
+                 base_url: str | None = None):
         super().__init__()
         from openai import OpenAI  # imported lazily so `mock`/tests don't need the package configured
 
-        self._client = OpenAI(api_key=api_key, max_retries=max_retries)
+        self._client = OpenAI(api_key=api_key, max_retries=max_retries, base_url=base_url or None)
+        # Name the real provider in errors: a DeepSeek failure said just
+        # "OpenAI request failed", which read as the wrong company.
+        host = re.sub(r"^https?://", "", base_url or "").split("/")[0]
+        self._where = f" ({host})" if host else ""
         self._model = model
         self._tools = _openai_tools(tool_specs)
+        self._settings: dict[str, Any] = {"tool_choice": "required", "temperature": 0}
+        if base_url and "api.deepseek.com" in base_url:
+            # DeepSeek's thinking mode adds output tokens and seconds to every
+            # step; a pick-one-tool decision doesn't need it (Rocky and
+            # jev-ultrafast turn it off the same way).
+            self._settings["extra_body"] = {"thinking": {"type": "disabled"}}
+
+    def _rejected_setting(self, error: Exception) -> str | None:
+        if getattr(error, "status_code", None) != 400:
+            return None
+        message = str(error).lower()
+        for word, key in _DROPPABLE.items():
+            if word in message and key in self._settings:
+                return key
+        return None
 
     def decide(self, system: str, user: str) -> dict[str, Any]:
-        try:
-            response = self._client.chat.completions.create(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                tools=self._tools,
-                tool_choice="required",
-                temperature=0,
-            )
-        except Exception as e:  # network errors, auth errors, rate limits, etc.
-            raise LLMError(f"OpenAI request failed: {e}") from e
+        while True:
+            try:
+                response = self._client.chat.completions.create(
+                    model=self._model,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    tools=self._tools,
+                    **self._settings,
+                )
+                break
+            except Exception as e:  # network errors, auth errors, rate limits, etc.
+                rejected = self._rejected_setting(e)
+                if rejected is None:
+                    raise LLMError(f"OpenAI request failed{self._where}: {e}") from e
+                self._settings.pop(rejected)  # then retry without it; each setting can only be dropped once
 
         if response.usage is not None:
-            self._record_usage(response.usage.prompt_tokens, response.usage.completion_tokens)
+            usage = response.usage
+            # Cached prompt tokens, as OpenAI/Gemini (prompt_tokens_details)
+            # or DeepSeek (prompt_cache_hit_tokens) report them. Recorded like
+            # Anthropic's: input_tokens = the uncached part, so costs compare
+            # fairly across providers in the output record and eval report.
+            cached = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", None)
+            if not isinstance(cached, int):
+                cached = getattr(usage, "prompt_cache_hit_tokens", 0)
+            cached = cached if isinstance(cached, int) else 0
+            self._record_usage((usage.prompt_tokens or 0) - cached, usage.completion_tokens, cached, 0)
 
         tool_calls = response.choices[0].message.tool_calls or []
         if not tool_calls:
@@ -202,7 +277,15 @@ class AnthropicProvider(BaseLLMProvider):
             response = self._client.messages.create(
                 model=self._model,
                 max_tokens=1024,
-                system=system,
+                # Tools render first, then system, so this one marker on the
+                # system block caches both -- the ~2.5-4k tokens that are
+                # identical on every step of a task. Only the user message
+                # (task, history, observation) changes per step. Steps run
+                # seconds apart, well inside the 5-minute cache lifetime, so
+                # step 2 onward reads the prefix at ~0.1x input price.
+                # Prefixes under the model's minimum (1024 tokens on Sonnet 5,
+                # 4096 on Haiku 4.5) just don't cache -- no error.
+                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user}],
                 tools=self._tools,
                 tool_choice={"type": "any"},
@@ -211,7 +294,11 @@ class AnthropicProvider(BaseLLMProvider):
             raise LLMError(f"Anthropic request failed: {e}") from e
 
         if response.usage is not None:
-            self._record_usage(response.usage.input_tokens, response.usage.output_tokens)
+            self._record_usage(
+                response.usage.input_tokens, response.usage.output_tokens,
+                getattr(response.usage, "cache_read_input_tokens", 0),
+                getattr(response.usage, "cache_creation_input_tokens", 0),
+            )
 
         for block in response.content:
             if block.type == "tool_use":
@@ -246,6 +333,11 @@ class MockProvider(BaseLLMProvider):
         return json.loads(raw) if isinstance(raw, str) else raw
 
 
+ZERO_USAGE = {
+    "input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+}
+
+
 class LLMClient:
     def __init__(self, provider: BaseLLMProvider, extra_system_facts: str = ""):
         self._provider = provider
@@ -258,9 +350,13 @@ class LLMClient:
 
     @classmethod
     def from_config(cls, config, tool_specs: list[ToolSpec], extra_system_facts: str = "") -> "LLMClient":
-        if config.llm_provider == "openai":
+        if config.llm_provider in OPENAI_COMPATIBLE:
+            default_url, key_attr = OPENAI_COMPATIBLE[config.llm_provider]
             return cls(
-                OpenAIProvider(config.openai_api_key, config.llm_model, tool_specs, config.llm_max_retries),
+                OpenAIProvider(
+                    getattr(config, key_attr), config.llm_model, tool_specs, config.llm_max_retries,
+                    base_url=getattr(config, "openai_base_url", "") or default_url,
+                ),
                 extra_system_facts,
             )
         if config.llm_provider == "anthropic":
@@ -274,11 +370,17 @@ class LLMClient:
 
     def get_usage(self) -> dict[str, int]:
         """Token usage accumulated across every decide() call made through
-        this client so far this task. {0, 0} for MockProvider -- no real
-        tokens were spent, which is the honest answer, not a missing one."""
+        this client so far this task. All zeros (ZERO_USAGE) for MockProvider
+        -- no real tokens were spent, which is the honest answer, not a
+        missing one. The prompt's full size is input_tokens +
+        cache_read_input_tokens + cache_creation_input_tokens on every
+        provider: OpenAI-compatible ones report their cached prompt tokens as
+        cache reads, the uncached rest as input."""
         return {
             "input_tokens": self._provider.total_input_tokens,
             "output_tokens": self._provider.total_output_tokens,
+            "cache_read_input_tokens": self._provider.total_cache_read_tokens,
+            "cache_creation_input_tokens": self._provider.total_cache_creation_tokens,
         }
 
     def decide_next_action(self, task: str, history: list[str], observation) -> dict[str, Any]:

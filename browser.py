@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from playwright.sync_api import Browser, BrowserContext, Page, TimeoutError as PWTimeout, sync_playwright
 
 from errors import TaskCannotBeCompleted, explain
+from secret_fields import HIDDEN, SECRET_AUTOCOMPLETE, is_secret_label
 from tool_provider import RiskLevel, ToolProvider, ToolSpec
 
 # Tags we consider "interactive" -- i.e. worth showing to the LLM as
@@ -63,6 +64,58 @@ SENSITIVE_KEYWORDS = (
     "sign up", "subscribe", "save changes", "update password", "transfer",
 )
 
+# Attributes observe()/element_summary() need from one element, read in the
+# page itself. Attributes are the HTML attributes (like Playwright's
+# get_attribute), `value` is the live typed value, `inner` is innerText.
+_ATTRS_JS_BODY = """
+    const attr = n => el.getAttribute(n);
+    const tag = el.tagName.toLowerCase();
+    const item = {
+        tag, role: attr('role'), type: attr('type'), aria: attr('aria-label'), placeholder: attr('placeholder'),
+        inner: el.innerText || '', valueAttr: attr('value'), name: attr('name'), id: attr('id'),
+        autocomplete: attr('autocomplete'), checked: !!el.checked,
+        // The text of an associated <label> (wrapping or for=id), and of any
+        // aria-labelledby targets -- how most real checkboxes, radios and
+        // fields are named. Without these a wrapped checkbox read as ''.
+        labelText: el.labels && el.labels.length ? el.labels[0].innerText || '' : '',
+        labelledBy: (attr('aria-labelledby') || '').split(/\\s+/).filter(Boolean)
+            .map(id => (document.getElementById(id) || {}).innerText || '').join(' '),
+        value: (tag === 'input' || tag === 'select' || tag === 'textarea') ? String(el.value ?? '') : '',
+    };
+"""
+_ELEMENT_ATTRS_JS = "el => {" + _ATTRS_JS_BODY + " return item; }"
+
+# Every visible interactive element, in document order, plus the page title
+# and body text -- all of observe()'s reads in one round trip. Visibility
+# follows Playwright's own is_visible() (which observe() used per element
+# before): visible style, and a non-empty box; `display: contents` elements
+# have no box of their own, so they count if any child is visible.
+_SNAPSHOT_JS = """
+(selector) => {
+    const styleVisible = (el, style) =>
+        (!el.checkVisibility || el.checkVisibility()) && style.visibility === 'visible';
+    const isVisible = (el) => {
+        const style = getComputedStyle(el);
+        if (style.display === 'contents') {
+            return Array.from(el.children).some(isVisible);
+        }
+        if (!styleVisible(el, style)) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    };
+    const items = [], kept = [];
+    for (const el of document.querySelectorAll(selector)) {
+        try {
+            if (!isVisible(el)) continue;
+""" + _ATTRS_JS_BODY + """
+            items.push(item);
+            kept.push(el);
+        } catch (e) { /* skip an element that can't be read, as before */ }
+    }
+    return {items, kept, title: document.title, body: document.body ? document.body.innerText : ''};
+}
+"""
+
 
 @dataclass
 class ElementInfo:
@@ -71,7 +124,7 @@ class ElementInfo:
     role: str
     text: str
     input_type: str = ""
-    state: str = ""  # current .checked (checkbox/radio) or .value (everything else) -- see observe()
+    state: str = ""  # current .checked (checkbox/radio) or .value (everything else; HIDDEN for a secret field) -- see observe()
 
 
 @dataclass
@@ -202,37 +255,53 @@ class BrowserSession:
         except PWTimeout:
             pass  # Best-effort; we still try to read whatever is there.
 
-        handles = self.page.query_selector_all(INTERACTIVE_SELECTOR)
-        elements: list[ElementInfo] = []
-        kept_handles = []
-        for i, handle in enumerate(handles):
-            try:
-                if not handle.is_visible():
-                    continue
-                tag = handle.evaluate("el => el.tagName.toLowerCase()")
-                role = handle.get_attribute("role") or tag
-                input_type = handle.get_attribute("type") or ""
-                label = (
-                    handle.get_attribute("aria-label")
-                    or handle.get_attribute("placeholder")
-                    or handle.inner_text()
-                    or handle.get_attribute("value")
-                    or handle.get_attribute("name")
-                    or ""
-                )
-                label = " ".join(label.split())[:80]  # collapse whitespace, cap length
-                if input_type in ("checkbox", "radio"):
-                    state = "checked" if handle.evaluate("el => el.checked") else "unchecked"
-                elif tag in ("input", "select", "textarea"):
-                    state = str(handle.evaluate("el => el.value") or "")
-                else:
-                    state = ""
-            except Exception:
-                continue
+        # One in-page read of every interactive element, the title and the
+        # body text, instead of ~7 Playwright round trips per element (a
+        # visibility check plus one call per attribute). Measured with
+        # evals/bench_observe.py -- see CHANGELOG.md 2026-09-24. The element
+        # handles for click/type come back from the same snapshot, so the
+        # indices below always match the handles, and the page can't change
+        # between reading an element and keeping it.
+        snapshot = self.page.evaluate_handle(_SNAPSHOT_JS, INTERACTIVE_SELECTOR)
+        try:
+            data = snapshot.evaluate("s => ({items: s.items, title: s.title, body: s.body})")
+            kept_array = snapshot.get_property("kept")
+            by_position = kept_array.get_properties()
+            kept_handles = [by_position[str(i)].as_element() for i in range(len(data["items"]))]
+            kept_array.dispose()
+        finally:
+            snapshot.dispose()
 
-            idx = len(kept_handles)
-            kept_handles.append(handle)
-            elements.append(ElementInfo(index=idx, tag=tag, role=role, text=label, input_type=input_type, state=state))
+        elements: list[ElementInfo] = []
+        for idx, item in enumerate(data["items"]):
+            tag = item["tag"]
+            input_type = item["type"] or ""
+            secret = self._is_secret_field(tag, input_type, item)
+            label = (
+                item["aria"]
+                or item["labelledBy"]
+                or item["placeholder"]
+                or item["inner"]
+                or item["labelText"]
+                # A secret field's value never stands in for its label --
+                # the label is sent to the model (see secret_fields.py).
+                or (None if secret else item["valueAttr"])
+                or item["name"]
+                or ""
+            )
+            label = " ".join(label.split())[:80]  # collapse whitespace, cap length
+            if input_type in ("checkbox", "radio"):
+                state = "checked" if item["checked"] else "unchecked"
+            elif tag in ("input", "select", "textarea"):
+                value = item["value"] or ""
+                # Masked, but still "" vs HIDDEN, so VERIFY can see that
+                # typing into an empty password field did something.
+                state = (HIDDEN if value else "") if secret else value
+            else:
+                state = ""
+            elements.append(ElementInfo(
+                index=idx, tag=tag, role=item["role"] or tag, text=label, input_type=input_type, state=state,
+            ))
 
         self._last_elements = kept_handles
 
@@ -245,11 +314,7 @@ class BrowserSession:
             self._text_offset = 0
             self._observed_url = self.page.url
 
-        try:
-            body_text = self.page.inner_text("body")
-        except Exception:
-            body_text = ""
-        full_text = " ".join(body_text.split())
+        full_text = " ".join((data["body"] or "").split())
         # Clamp so `scroll("down")` called one time too many lands exactly
         # on the last page of text instead of sliding past the end into an
         # empty string forever (Python slicing past the end of a string
@@ -262,14 +327,15 @@ class BrowserSession:
         text_truncated = self._text_offset + len(visible_text) < len(full_text)
         self._last_max_chars = max_chars
 
-        page_signal = (self.page.url + " " + self.page.title() + " " + visible_text[:500]).lower()
+        title = data["title"] or ""
+        page_signal = (self.page.url + " " + title + " " + visible_text[:500]).lower()
         looks_like_login = any(phrase in page_signal for phrase in LOGIN_WALL_PHRASES)
 
         state_fingerprint = "|".join(f"{el.index}:{el.state}" for el in elements)
 
         return Observation(
             url=self.page.url,
-            title=self.page.title(),
+            title=title,
             elements=elements,
             visible_text=visible_text,
             looks_like_login=looks_like_login,
@@ -283,12 +349,36 @@ class BrowserSession:
         if 0 <= index < len(self._last_elements):
             handle = self._last_elements[index]
             try:
-                tag = handle.evaluate("el => el.tagName.toLowerCase()")
-                label = handle.inner_text() or handle.get_attribute("aria-label") or handle.get_attribute("value") or ""
-                return f"<{tag}> '{' '.join(label.split())[:60]}'"
+                item = handle.evaluate(_ELEMENT_ATTRS_JS)
+                secret = self._is_secret_field(item["tag"], item["type"] or "", item)
+                label = (
+                    item["inner"]
+                    or item["aria"]
+                    or item["labelText"]
+                    # value is what names an <input type=submit value="Delete">,
+                    # but in a secret field it's the secret itself.
+                    or (None if secret else item["valueAttr"])
+                    or ""
+                )
+                return f"<{item['tag']}> '{' '.join(label.split())[:60]}'"
             except Exception:
                 pass
         return f"element #{index}"
+
+    @staticmethod
+    def _is_secret_field(tag: str, input_type: str, attrs: dict) -> bool:
+        """Whether this element holds a secret whose value must never be sent
+        anywhere -- see secret_fields.py. `attrs` is one element's entry from
+        _SNAPSHOT_JS/_ELEMENT_ATTRS_JS. Buttons can't hold one, so a "Reset
+        password" button keeps its label."""
+        if tag not in ("input", "textarea") or input_type in ("submit", "button", "reset", "checkbox", "radio"):
+            return False
+        if input_type == "password":
+            return True
+        autocomplete = (attrs.get("autocomplete") or "").lower().split()
+        if SECRET_AUTOCOMPLETE.intersection(autocomplete):
+            return True
+        return is_secret_label(attrs.get("aria"), attrs.get("placeholder"), attrs.get("name"), attrs.get("id"))
 
     def is_sensitive(self, index: int) -> bool:
         summary = self.element_summary(index).lower()

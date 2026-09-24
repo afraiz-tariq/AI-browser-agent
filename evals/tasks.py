@@ -2,7 +2,7 @@
 Task definitions for the eval suite (see evals/run_evals.py and
 evals/README.md).
 
-These are NOT the same thing as tests/*.py. The 217 tests under tests/
+These are NOT the same thing as tests/*.py. The tests under tests/
 drive the loop with MockProvider -- scripted replies -- which proves the
 *mechanism* (dispatch, risk gating, verify, pagination, ...) is correct,
 but never exercises whether a real model actually reasons its way through
@@ -389,6 +389,60 @@ TASK_WINDOWS_CALCULATOR = EvalTask(
 )
 
 
+# --- Browser, click-heavy (local fixtures) ---
+# Added for the DECIDER=claude vs hybrid comparison (docs/JEV_VOICE_PLAN.md):
+# the tasks above are mostly "open a URL, then write the answer", steps Jev
+# can't take, so they'd understate a faster click/type decider. These two are
+# mostly clicks. Each page shows a code built from the real control states,
+# so a pass proves the clicks happened, not just that the model said so.
+
+def _build_settings_toggles(ctx: EvalContext) -> str:
+    return (
+        f"Go to {ctx.fixtures_server}/settings_toggles.html. Turn Dark mode on, turn Email alerts off, "
+        "turn Compact view on, and leave Notification sounds as it is. Then press Apply settings and "
+        "tell me the confirmation code the page shows."
+    )
+
+
+def _check_settings_toggles(outcome: dict, ctx: EvalContext) -> tuple[bool, str]:
+    if not outcome["success"]:
+        return False, f"Task reported failure: {outcome['result']}"
+    if "d1-e0-c1-s1" not in _outcome_text(outcome):
+        return False, f"Expected confirmation code D1-E0-C1-S1 in the summary, got: {outcome['result']!r}"
+    return True, "All four toggles ended in the requested state (code D1-E0-C1-S1)."
+
+
+TASK_SETTINGS_TOGGLES = EvalTask(
+    id="browser_settings_toggles",
+    description="Click-heavy: set three checkboxes (leave a fourth), apply, report the resulting code.",
+    build=_build_settings_toggles,
+    check=_check_settings_toggles,
+)
+
+
+def _build_trip_wizard(ctx: EvalContext) -> str:
+    return (
+        f"Go to {ctx.fixtures_server}/trip_wizard.html and plan a trip to Lisbon for 3 nights using the "
+        "planner's steps. Tell me the reference shown on the summary."
+    )
+
+
+def _check_trip_wizard(outcome: dict, ctx: EvalContext) -> tuple[bool, str]:
+    if not outcome["success"]:
+        return False, f"Task reported failure: {outcome['result']}"
+    if "trip-lis-3" not in _outcome_text(outcome):
+        return False, f"Expected reference TRIP-LIS-3 in the summary, got: {outcome['result']!r}"
+    return True, "Completed the 3-step wizard with the right choices (TRIP-LIS-3)."
+
+
+TASK_TRIP_WIZARD = EvalTask(
+    id="browser_trip_wizard",
+    description="Click-heavy: a 3-step wizard (pick destination, Next, pick length, Next), report the reference.",
+    build=_build_trip_wizard,
+    check=_check_trip_wizard,
+)
+
+
 TASKS: list[EvalTask] = [
     TASK_SEARCH_AND_EXTRACT,
     TASK_LOGIN_WALL_DETECTION,
@@ -398,6 +452,8 @@ TASKS: list[EvalTask] = [
     TASK_EXCEL_WRITE_ROUNDTRIP,
     TASK_EXCEL_READ_VALUE,
     TASK_BROWSER_THEN_EXCEL,
+    TASK_SETTINGS_TOGGLES,
+    TASK_TRIP_WIZARD,
     TASK_MCP_FETCH,
     TASK_MCP_FILESYSTEM,
     TASK_MCP_BRAVE_SEARCH,

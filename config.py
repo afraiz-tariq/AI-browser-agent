@@ -39,6 +39,14 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _float(name: str, default: float) -> float:
+    val = os.getenv(name)
+    try:
+        return float(val) if val else default
+    except ValueError:
+        return default
+
+
 @dataclass
 class Config:
     # --- LLM provider (kept provider-agnostic so the model can be swapped
@@ -47,12 +55,34 @@ class Config:
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gpt-4o-mini"))
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
+    # Cheaper OpenAI-compatible providers (llm.OPENAI_COMPATIBLE): set
+    # LLM_PROVIDER=deepseek / gemini / openrouter plus that provider's key.
+    deepseek_api_key: str = field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", ""))
+    gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    openrouter_api_key: str = field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY", ""))
+    # Overrides the provider's address, e.g. http://localhost:1234/v1 for LM Studio.
+    openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", ""))
     # How many times the OpenAI/Anthropic SDK retries a request itself
     # (connection errors, timeouts, 429s, 5xx) before giving up and raising
     # -- passed straight to the SDK client, which already implements
     # backoff/jitter correctly. 2 matches both SDKs' own default, so this
     # is a no-op unless someone opts into a higher value via .env.
     llm_max_retries: int = field(default_factory=lambda: _int("LLM_MAX_RETRIES", 2))
+
+    # --- Optional faster decider for browser steps (jev.py) ---
+    # "claude" (default): every step is decided by the LLM above, as always.
+    # "hybrid": TypeSafe's Jev picks click/type/scroll steps from the page's
+    # own elements; everything else (and anything Jev is unsure of) still
+    # goes to the LLM above. See docs/JEV_VOICE_PLAN.md.
+    decider: str = field(default_factory=lambda: os.getenv("DECIDER", "claude").strip().lower())
+    typesafe_api_key: str = field(default_factory=lambda: os.getenv("TYPESAFE_API_KEY", ""))
+    typesafe_model: str = field(default_factory=lambda: os.getenv("TYPESAFE_MODEL", "jev-latest"))
+    # Below this confidence (operation x target), Jev's pick is not used and
+    # Claude decides the step instead.
+    jev_min_confidence: float = field(default_factory=lambda: _float("JEV_MIN_CONFIDENCE", 0.5))
+    # Stricter floor inside Windows app windows, where Jev can't see the
+    # effect of each click (see jev.JevDecider).
+    jev_min_confidence_windows: float = field(default_factory=lambda: _float("JEV_MIN_CONFIDENCE_WINDOWS", 0.8))
 
     # --- Cost / runaway-loop controls ---
     max_steps: int = field(default_factory=lambda: _int("MAX_STEPS", 20))
@@ -74,6 +104,22 @@ class Config:
     # only if this is explicitly turned on -- off by default, since undoing
     # them is as simple as not saving/persisting. See tool_provider.py.
     confirm_r1_actions: bool = field(default_factory=lambda: _bool("CONFIRM_R1_ACTIONS", False))
+
+    # --- Voice front-end (voice.py) ---
+    # Push-to-talk key (hold while speaking) and the key that stops a running
+    # task; names such as ctrl_r, alt_gr, f9, f10 (see voice.VK_CODES).
+    voice_ptt_key: str = field(default_factory=lambda: os.getenv("VOICE_PTT_KEY", "ctrl_r"))
+    voice_stop_key: str = field(default_factory=lambda: os.getenv("VOICE_STOP_KEY", "f10"))
+    # Local speech-to-text model (faster-whisper): tiny.en / base.en / small.en
+    # -- bigger is more accurate and slower. Language "en" for English.
+    voice_whisper_model: str = field(default_factory=lambda: os.getenv("VOICE_WHISPER_MODEL", "base.en"))
+    voice_language: str = field(default_factory=lambda: os.getenv("VOICE_LANGUAGE", "en"))
+    # One-step spoken commands (open an app/site, volume, media keys) done
+    # directly in well under a second instead of a full agent run -- see
+    # quick_commands.py. Jev (if TYPESAFE_API_KEY is set) must be at least this
+    # sure, otherwise the full agent runs.
+    voice_quick_commands: bool = field(default_factory=lambda: _bool("VOICE_QUICK_COMMANDS", True))
+    quick_min_confidence: float = field(default_factory=lambda: _float("QUICK_MIN_CONFIDENCE", 0.8))
 
     # --- Discord bot interface (discord_bot.py) ---
     discord_bot_token: str = field(default_factory=lambda: os.getenv("DISCORD_BOT_TOKEN", ""))
@@ -111,6 +157,11 @@ class Config:
     # regardless of this flag or CONFIRM_SENSITIVE_ACTIONS/CONFIRM_R1_ACTIONS
     # -- see windows_tools.py and tool_provider.py's requires_confirmation().
     enable_windows_automation: bool = field(default_factory=lambda: _bool("ENABLE_WINDOWS_AUTOMATION", False))
+    # Apps that open without a [y/n] when launched by bare name with no
+    # arguments (windows_tools.DEFAULT_SAFE_APPS). Comma-separated; empty
+    # means "confirm every launch", as before.
+    safe_apps: str = field(default_factory=lambda: os.getenv(
+        "SAFE_APPS", "notepad.exe,calc.exe,mspaint.exe,snippingtool.exe,explorer.exe"))
 
     def validate(self) -> list[str]:
         """Return a list of human-readable problems, empty if config is OK."""
@@ -123,10 +174,27 @@ class Config:
             problems.append(
                 "ANTHROPIC_API_KEY is not set. Copy .env.example to .env and add your key."
             )
-        if self.llm_provider not in ("openai", "anthropic", "mock"):
+        for provider, key_name, value in (
+            ("deepseek", "DEEPSEEK_API_KEY", self.deepseek_api_key),
+            ("gemini", "GEMINI_API_KEY", self.gemini_api_key),
+            ("openrouter", "OPENROUTER_API_KEY", self.openrouter_api_key),
+        ):
+            if self.llm_provider == provider and not value:
+                problems.append(f"LLM_PROVIDER={provider} needs {key_name} in .env.")
+        if self.llm_provider not in ("openai", "anthropic", "mock", "deepseek", "gemini", "openrouter"):
             problems.append(
-                f"Unknown LLM_PROVIDER '{self.llm_provider}'. Supported: openai, anthropic, mock."
+                f"Unknown LLM_PROVIDER '{self.llm_provider}'. Supported: anthropic, openai, deepseek, gemini, "
+                "openrouter, mock."
             )
+        if self.decider not in ("claude", "hybrid"):
+            problems.append(f"Unknown DECIDER '{self.decider}'. Supported: claude, hybrid.")
+        if self.decider == "hybrid" and not self.typesafe_api_key:
+            problems.append(
+                "DECIDER=hybrid needs TYPESAFE_API_KEY (from console.typesafe.ai) in .env, "
+                "or set DECIDER=claude."
+            )
+        if not 0 <= self.jev_min_confidence <= 1:
+            problems.append("JEV_MIN_CONFIDENCE must be between 0 and 1.")
         if self.max_steps < 1:
             problems.append("MAX_STEPS must be at least 1.")
         if self.enable_mcp_brave_search and not self.brave_api_key:
