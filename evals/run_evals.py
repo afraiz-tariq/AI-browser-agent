@@ -8,7 +8,7 @@ project is developed in -- there's no live API key there -- which is why
 this file refuses to run against LLM_PROVIDER=mock rather than silently
 producing meaningless "passes."
 
-What this is for: tests/*.py (361 tests) drive the agent loop with
+What this is for: tests/*.py (363 tests) drive the agent loop with
 MockProvider -- scripted replies -- to prove the *mechanism* is correct
 (dispatch, risk gating, verify, pagination, ...). None of them ever ask a
 real model to reason its way through a task. This suite does exactly
@@ -178,7 +178,7 @@ def _print_report(results: list[EvalResult]) -> int:
           f"{speed['cache_creation_input_tokens']} written (~1.25x).")
     if speed["jev_decisions"] or speed["claude_escalations"]:
         print(f"Jev decided {speed['jev_decisions']} steps (median {speed['median_decide_ms_jev_steps']} ms); "
-              f"Claude decided {speed['claude_escalations']} (median {speed['median_decide_ms_claude_steps']} ms, "
+              f"the LLM decided {speed['claude_escalations']} (median {speed['median_decide_ms_claude_steps']} ms, "
               f"incl. the Jev call first when Jev was asked).")
     print(f"Median per step: decide {speed['median_decide_ms']} ms, observe {speed['median_observe_ms']} ms, "
           f"act {speed['median_act_ms']} ms. Median per task: {speed['median_steps_per_task']} steps, "
@@ -192,10 +192,12 @@ def account_problem(result: EvalResult) -> str | None:
     later task can tell us anything either."""
     if result.passed is None:
         return None
-    for headline in ("run out of credit", "rejected the API key"):
-        if headline in result.detail:
-            return f"your AI provider account has {headline}." if "credit" in headline \
-                else "your AI provider rejected the API key."
+    if "run out of credit" in result.detail:
+        return "your AI provider account has run out of credit."
+    if "rejected the API key" in result.detail:
+        return "your AI provider rejected the API key."
+    if "doesn't know the model name" in result.detail:
+        return "the provider doesn't know the LLM_MODEL name (see the WHY line above for the names it accepts)."
     return None
 
 

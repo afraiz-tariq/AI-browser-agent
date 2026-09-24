@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 361 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 363 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -665,7 +665,7 @@ At September 2026 list prices that's roughly, per step:
 | `anthropic` / `claude-haiku-4-5` | ~$0.0021 | 50% (but failed 2/9 evals and took more steps) |
 | `openai` / `gpt-5-mini` | ~$0.0006 + its thinking tokens | ~15-30% |
 | `gemini` / `gemini-3.1-flash-lite-preview` | ~$0.0006 | ~13% |
-| `deepseek` / `deepseek-v4.1-flash` | ~$0.0005 (half off-peak) | ~6-11% |
+| `deepseek` / `deepseek-flash` | ~$0.0005 (half off-peak) | ~6-11% |
 
 Cheaper models tend to take more steps or fail more, so compare them on the
 eval suite before switching: `python evals/run_evals.py --save

@@ -532,6 +532,13 @@ def _explain_llm_error(error: Exception) -> str:
             text,
             "Check the API key for your LLM_PROVIDER in .env (no extra spaces or quotes).",
         )
+    if code in ("400", "404") and "model" in lowered and any(s in lowered for s in (
+            "supported", "not found", "does not exist", "invalid model", "unknown model")):
+        return explain(
+            "Your AI provider doesn't know the model name in LLM_MODEL.",
+            text,
+            "Set LLM_MODEL in .env to a name this provider lists (the WHY line above often names them).",
+        )
     if code in ("429", "529") or "overloaded" in lowered or "rate_limit" in lowered:
         return explain(
             "The AI service is busy right now.",

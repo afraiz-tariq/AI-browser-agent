@@ -327,3 +327,14 @@ def test_request_id_digits_do_not_change_the_explanation():
     msg = _explain_llm_error(Exception("Error code: 500 - server error, request_id req_4291529402"))
     assert "could not be reached" in msg.splitlines()[0]
     assert "run out of credit" in _explain_llm_error(Exception("Error code: 402 - Insufficient Balance"))
+
+
+def test_an_unknown_model_name_is_explained():
+    # Real DeepSeek reply for LLM_MODEL=deepseek-v4.1-flash (a wrong name).
+    from agent import _explain_llm_error
+
+    msg = _explain_llm_error(Exception(
+        "OpenAI request failed (api.deepseek.com): Error code: 400 - {'error': {'message': 'The supported API "
+        "model names are deepseek-flash, deepseek-v4-pro, but you passed deepseek-v4.1-flash.'}}"))
+    assert "doesn't know the model name" in msg.splitlines()[0]
+    assert "deepseek-flash" in msg  # the accepted names stay visible

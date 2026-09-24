@@ -176,3 +176,11 @@ def test_an_account_problem_stops_the_eval_run():
     ordinary = EvalResult("t", "d", False, "Expected 'San Francisco' in the summary", 5.0, {})
     assert account_problem(ordinary) is None
     assert account_problem(EvalResult("t", "d", None, "Skipped", 0.0, {})) is None
+
+
+def test_a_wrong_model_name_also_stops_the_eval_run():
+    from evals.run_evals import EvalResult, account_problem
+
+    wrong = EvalResult("t", "d", False, "Task reported failure: WHAT HAPPENED: Your AI provider doesn't know the "
+                                        "model name in LLM_MODEL.", 0.4, {})
+    assert "LLM_MODEL" in account_problem(wrong)

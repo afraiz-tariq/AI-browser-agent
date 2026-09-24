@@ -14,6 +14,11 @@ full commit message.
 
 ## 2026-09-24
 
+- Corrected the documented DeepSeek model name to `deepseek-flash` (the API
+  rejected `deepseek-v4.1-flash`, listing `deepseek-flash`, `deepseek-v4-pro`).
+  An unknown model name now gets its own plain explanation and stops the
+  eval run early; the eval report says "the LLM" rather than "Claude".
+
 - First DeepSeek eval: the key worked but the account had no balance (402)
   on every task. The eval runner now stops at the first no-credit /
   rejected-key failure, and OpenAI-compatible errors name the real host

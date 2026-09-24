@@ -168,7 +168,7 @@ def test_other_errors_are_not_retried():
 
 
 def test_deepseek_gets_thinking_turned_off_and_its_own_address():
-    provider = OpenAIProvider("k", "deepseek-v4.1-flash", SOME_TOOL_SPECS, base_url="https://api.deepseek.com")
+    provider = OpenAIProvider("k", "deepseek-flash", SOME_TOOL_SPECS, base_url="https://api.deepseek.com")
     sent = {}
     provider._client.chat.completions.create = lambda **kw: sent.update(kw) or _response(
         [_tool_call("finish", {"summary": "ok"})])
