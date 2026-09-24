@@ -14,6 +14,12 @@ full commit message.
 
 ## 2026-09-24
 
+- Voice troubleshooting after the first real try (holding the key did
+  nothing): `python voice.py --keys` shows which keys the program sees,
+  `--mic-test` checks the microphone + speech model without the keyboard, a
+  microphone that fails to start now says so, and the harmless Hugging Face
+  symlink warning is silenced.
+
 - Second live hybrid run (Jev in Windows apps too): 11/11 passed, whole
   suite 101 s vs 169 s Claude-only; Calculator 24.5 s -> 13.3 s. See
   `evals/README.md`.

@@ -3,6 +3,8 @@
 Voice front-end: hold a key, say a task, the agent does it and says the result.
 
     python voice.py
+    python voice.py --keys       # troubleshooting: show which keys this program sees
+    python voice.py --mic-test   # troubleshooting: record 4 s and show what was heard
 
 Hold VOICE_PTT_KEY (default: right Ctrl) while speaking and release to send.
 Press VOICE_STOP_KEY (default: F10) to stop a running task between steps.
@@ -35,6 +37,8 @@ with fakes -- no microphone, no model, no network.
 """
 from __future__ import annotations
 
+import argparse
+import os
 import queue
 import re
 import sys
@@ -211,11 +215,58 @@ def _parse_key(name: str):
     raise ValueError(f"Unknown key name {name!r} -- use e.g. ctrl_r, f9, f10, alt_gr, or a single character.")
 
 
+def key_test(seconds: float = 20.0) -> None:
+    """Print every key press exactly as the listener sees it -- the name to
+    put in VOICE_PTT_KEY / VOICE_STOP_KEY. If nothing prints at all, the
+    keyboard hook isn't receiving events (see README troubleshooting)."""
+    from pynput import keyboard
+
+    print(f"Press some keys (including the one you want for talking). Showing them for {seconds:.0f} s...")
+
+    def show(key) -> None:
+        name = key.name if isinstance(key, keyboard.Key) else getattr(key, "char", None) or repr(key)
+        print(f"  pressed: {name}")
+
+    with keyboard.Listener(on_press=show) as listener:
+        listener.join(seconds)
+    print("Done. Use a name shown above as VOICE_PTT_KEY in .env (e.g. VOICE_PTT_KEY=f9).")
+
+
+def mic_test(config, seconds: float = 4.0) -> None:
+    """Record a few seconds (no key needed) and print the transcript --
+    checks the microphone and the speech model on their own."""
+    import numpy as np
+
+    recorder = Recorder()
+    transcriber = Transcriber(config.voice_whisper_model, config.voice_language)
+    print(f"Recording for {seconds:.0f} s -- say something now...")
+    audio = recorder.record_for(seconds)
+    level = float(np.abs(audio).max()) if len(audio) else 0.0
+    print(f"  loudest sample: {level:.3f}  (near 0.000 means the microphone isn't picking anything up)")
+    print(f"  heard: {transcriber(audio)!r}")
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Voice front-end for the agent.")
+    parser.add_argument("--keys", action="store_true", help="show which keys the program sees, then exit")
+    parser.add_argument("--mic-test", action="store_true", help="record 4 s, show what was heard, then exit")
+    args = parser.parse_args()
+    # The speech-model download's symlink warning is harmless on Windows (it
+    # just uses a bit more disk); keep the startup output readable.
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+    if args.keys:
+        key_test()
+        return
+
     from agent import run_task
     from config import load_config
 
     config = load_config()
+    if args.mic_test:
+        mic_test(config)
+        return
+
     problems = config.validate()
     if problems:
         print("Configuration problem(s) found:")
@@ -266,16 +317,23 @@ def main() -> None:
             if state["busy"]:
                 print("  [voice] still working on the last task -- press the stop key to cancel it.")
                 return
+            try:
+                recorder.start()
+            except Exception as e:  # e.g. no microphone, or it's in use -- say so instead of failing silently
+                print(f"  [voice] could not start the microphone: {e}")
+                return
             state["recording"] = True
-            recorder.start()
             print("  [voice] listening...")
 
     def on_release(key) -> None:
         if key == ptt_key and state["recording"]:
             state["recording"] = False
-            jobs.put(recorder.stop())
+            audio = recorder.stop()
+            print(f"  [voice] got {len(audio) / SAMPLE_RATE:.1f} s of audio, transcribing...")
+            jobs.put(audio)
 
     print(f"Hold {config.voice_ptt_key} to talk, {config.voice_stop_key} to stop a task, Ctrl+C here to quit.")
+    print("  (Nothing happens when you hold the key? Run: python voice.py --keys)")
     with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
         try:
             listener.join()

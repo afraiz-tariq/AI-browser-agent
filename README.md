@@ -477,6 +477,15 @@ python voice.py
   `base.en`, ~150 MB) once. `small.en` is more accurate but slower; `tiny.en`
   is fastest.
 - For faster steps, combine with `DECIDER=hybrid` (see **Configuration**).
+- **Troubleshooting:** `python voice.py --keys` prints every key press as
+  the program sees it. If holding your key shows a different name, put that
+  name in `VOICE_PTT_KEY`. If nothing prints at all, the keyboard hook isn't
+  getting events; try a plain key like `f9`, and don't run the window you're
+  typing into as administrator unless Python is too. `python voice.py
+  --mic-test` records 4 seconds with no key needed and shows what was heard,
+  which checks the microphone and speech model on their own. Windows must
+  allow microphone access for desktop apps (Settings > Privacy & security >
+  Microphone).
 
 ## Discord bot interface
 
