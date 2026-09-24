@@ -14,6 +14,15 @@ full commit message.
 
 ## 2026-09-24
 
+- Voice quick commands (`quick_commands.py`): "open notepad", "go to
+  youtube", "search youtube for ...", "volume up", "pause", "next track"
+  and similar one-step requests run directly in well under a second
+  instead of a full agent run (~5 s). An exact-phrase matcher first, then
+  one Jev request for other phrasings (>= `QUICK_MIN_CONFIDENCE`);
+  anything else runs the full agent. Apps open only if the Windows arm's
+  own risk check says R0 (`SAFE_APPS`); URLs are built by code; media keys
+  classified R0 explicitly.
+
 - First working voice run ("open notepad": heard, launched, answered).
   At the user's request, opening a safe-listed app (`SAFE_APPS`, default
   Notepad/Calculator/Paint/Snipping Tool/Explorer) by bare name with no

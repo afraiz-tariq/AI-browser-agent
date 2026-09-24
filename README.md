@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 305 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 335 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -301,6 +301,7 @@ ai_browser_agent/
 ├── agent.py          # CLI entry point + the observe/decide/act/verify loop
 ├── discord_bot.py     # Discord bot interface: calls run_task() with a chat-based confirm_callback
 ├── voice.py           # Voice interface: push-to-talk, local speech-to-text, spoken results and confirmations
+├── quick_commands.py  # Voice shortcut: one-step commands (open app/site, volume, media) without a full agent run
 ├── browser.py         # Browser arm: Playwright wrapper (launch Chrome, observe page, run actions) + BrowserToolProvider
 ├── excel_tools.py      # Excel arm: openpyxl wrapper (open/read/write/save .xlsx files) + ExcelToolProvider
 ├── mcp_tools.py        # MCP arm (optional): wraps an MCP server (e.g. the "fetch" server) as a ToolProvider
@@ -481,6 +482,14 @@ python voice.py
 - The first run downloads the speech model (`VOICE_WHISPER_MODEL`, default
   `base.en`, ~150 MB) once. `small.en` is more accurate but slower; `tiny.en`
   is fastest.
+- **Quick commands run instantly** (well under a second, no full agent run):
+  "open notepad" / "open calculator" (apps on `SAFE_APPS`), "go to youtube",
+  "open example dot com", "search youtube for lofi beats", "volume up",
+  "mute", "pause", "next track". With `TYPESAFE_API_KEY` set, Jev also
+  catches other phrasings ("fire up the calculator"), only when it's at
+  least `QUICK_MIN_CONFIDENCE` sure. Anything longer ("open notepad and
+  type hello"), unsure, or not on the lists runs through the full agent as
+  before. Turn off with `VOICE_QUICK_COMMANDS=false`.
 - For faster steps, combine with `DECIDER=hybrid` (see **Configuration**).
 - **Troubleshooting:** `python voice.py --keys` prints the name of each key
   you press, as the program reads it; put the one you want in
@@ -585,6 +594,8 @@ each other.
 | `VOICE_STOP_KEY` | Voice: stops a running task before its next action (default `f10`) |
 | `VOICE_WHISPER_MODEL` | Voice: local speech-to-text model, `tiny.en` / `base.en` (default) / `small.en` |
 | `VOICE_LANGUAGE` | Voice: spoken language code, default `en` (use a multilingual model like `base` for others) |
+| `VOICE_QUICK_COMMANDS` | Voice: run simple one-step commands (open app/site, search, volume, media keys) instantly; default `true` |
+| `QUICK_MIN_CONFIDENCE` | Voice: how sure Jev must be (default `0.8`) to treat another phrasing as a quick command |
 | `DISCORD_BOT_TOKEN` | Bot token for `discord_bot.py`; it refuses to start without one |
 | `DISCORD_ALLOWED_USER_ID` | Your Discord user ID; `discord_bot.py` ignores everyone else |
 | `SAFE_APPS` | Apps that open without a `[y/n]` when launched by bare name with no arguments; default `notepad.exe,calc.exe,mspaint.exe,snippingtool.exe,explorer.exe`, empty = always ask |

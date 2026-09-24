@@ -159,7 +159,7 @@ Each phase ends with `pytest tests/ -q` green and, where marked, a real-run chec
 **Status 2026-09-24:** built, logic offline-tested, not yet run on real hardware.
 - `voice.py` has push-to-talk (right Ctrl), faster-whisper speech-to-text on the PC, pyttsx3/SAPI replies, spoken confirmation (plain "yes"/"confirm" only, otherwise fail-closed), and a stop key (F10) wired to a new `run_task(should_stop=...)`.
 - Deliberately deferred:
-  - Rocky's one-request fast path for simple commands (volume, media keys, "open X"). Every utterance currently goes through `run_task`, so "open notepad" costs about 2 Claude steps. Add the fast path next if that feels slow in use.
+  - ~~Rocky's one-request fast path for simple commands~~ Done 2026-09-24 at the user's request (`quick_commands.py`), once "open notepad" proved to take about 5 s through `run_task`. It uses a phrase matcher first, then one Jev request, and anything unsure goes to the full agent.
   - A wake word. Push-to-talk is simpler and more private.
 - The exit check from this phase still stands: a 10-command spoken session on the real machine.
 

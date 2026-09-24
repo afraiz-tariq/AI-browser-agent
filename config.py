@@ -104,6 +104,12 @@ class Config:
     # -- bigger is more accurate and slower. Language "en" for English.
     voice_whisper_model: str = field(default_factory=lambda: os.getenv("VOICE_WHISPER_MODEL", "base.en"))
     voice_language: str = field(default_factory=lambda: os.getenv("VOICE_LANGUAGE", "en"))
+    # One-step spoken commands (open an app/site, volume, media keys) done
+    # directly in well under a second instead of a full agent run -- see
+    # quick_commands.py. Jev (if TYPESAFE_API_KEY is set) must be at least this
+    # sure, otherwise the full agent runs.
+    voice_quick_commands: bool = field(default_factory=lambda: _bool("VOICE_QUICK_COMMANDS", True))
+    quick_min_confidence: float = field(default_factory=lambda: _float("QUICK_MIN_CONFIDENCE", 0.8))
 
     # --- Discord bot interface (discord_bot.py) ---
     discord_bot_token: str = field(default_factory=lambda: os.getenv("DISCORD_BOT_TOKEN", ""))

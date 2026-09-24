@@ -108,8 +108,9 @@ class VoiceAssistant:
     """One spoken task at a time: transcribe -> run_task -> speak the result.
     `run` is agent.run_task (injected so tests can fake it)."""
 
-    def __init__(self, config, transcribe, say, listen, run, log: Callable[[str], None] = print):
+    def __init__(self, config, transcribe, say, listen, run, log: Callable[[str], None] = print, quick=None):
         self.config = config
+        self.quick = quick  # quick_commands.QuickCommands, or None to always run the full agent
         self.transcribe = transcribe
         self.say = say
         self.log = log
@@ -135,6 +136,15 @@ class VoiceAssistant:
             self.log("  [voice] didn't catch anything.")
             return None
         self.log(f"\nYou said: {text}")
+        if self.quick is not None:
+            try:
+                reply = self.quick.try_handle(text)
+            except Exception as e:  # a failed shortcut falls back to the full agent, never to silence
+                self.log(f"  [quick] failed ({e}); running the full agent instead.")
+                reply = None
+            if reply:
+                self.say(reply)
+                return {"success": True, "result": reply, "quick": True}
         self.say("On it.")
         self.stop_event.clear()
         outcome = self.run(
@@ -308,6 +318,39 @@ def mic_test(config, seconds: float = 4.0) -> None:
     print(f"  heard: {transcriber(audio)!r}")
 
 
+def build_quick_commands(config):
+    """QuickCommands wired to the real Windows actions, or None when turned
+    off (VOICE_QUICK_COMMANDS=false). App launches go through the Windows
+    arm's own risk check and launcher, so they follow exactly the SAFE_APPS
+    rule the agent uses; if that arm can't load, apps go to the full agent."""
+    if not config.voice_quick_commands:
+        return None
+    import webbrowser
+
+    from quick_commands import QuickCommands, windows_media_key
+
+    try:
+        from windows_tools import WindowsSession, WindowsToolProvider, normalize_app_name
+
+        safe_apps = frozenset(normalize_app_name(a) for a in config.safe_apps.split(",") if a.strip())
+
+        provider = WindowsToolProvider(WindowsSession(), safe_apps=safe_apps)
+        is_safe = lambda exe: provider.get_dynamic_risk("windows_launch_app", {"path": exe}) == "R0"  # noqa: E731
+        launch = lambda exe: provider.session.execute("windows_launch_app", {"path": exe})  # noqa: E731
+    except Exception:  # noqa: BLE001 -- no Windows arm here: never launch via the shortcut
+        safe_apps = frozenset()
+        is_safe, launch = (lambda exe: False), (lambda exe: None)
+    jev = None
+    if config.typesafe_api_key:
+        from jev import shared_client
+
+        jev = shared_client(config.typesafe_api_key, config.typesafe_model)
+    return QuickCommands(
+        safe_apps, launch_app=launch, open_url=webbrowser.open, press_media_key=windows_media_key,
+        jev=jev, min_confidence=config.quick_min_confidence, is_safe_launch=is_safe,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Voice front-end for the agent.")
     parser.add_argument("--keys", action="store_true", help="show which keys the program sees, then exit")
@@ -365,7 +408,7 @@ def main() -> None:
     def worker() -> None:
         speaker = Speaker()  # created on this thread; only ever used from it
         holder["assistant"] = VoiceAssistant(
-            config, transcriber, speaker, recorder.record_for, run_task,
+            config, transcriber, speaker, recorder.record_for, run_task, quick=build_quick_commands(config),
         )
         ready.set()
         speaker(f"Ready. Hold {config.voice_ptt_key} and speak.")
