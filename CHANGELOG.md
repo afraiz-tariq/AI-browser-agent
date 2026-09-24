@@ -14,6 +14,11 @@ full commit message.
 
 ## 2026-09-24
 
+- First DeepSeek eval: the key worked but the account had no balance (402)
+  on every task. The eval runner now stops at the first no-credit /
+  rejected-key failure, and OpenAI-compatible errors name the real host
+  (e.g. `api.deepseek.com`) instead of just "OpenAI".
+
 - Cheaper LLM providers: `LLM_PROVIDER=deepseek`, `gemini` or `openrouter`
   (plus `OPENAI_BASE_URL` for any OpenAI-compatible server), via the
   existing OpenAI provider. A setting a model rejects (e.g. GPT-5's

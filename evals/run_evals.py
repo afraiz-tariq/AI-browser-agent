@@ -8,7 +8,7 @@ project is developed in -- there's no live API key there -- which is why
 this file refuses to run against LLM_PROVIDER=mock rather than silently
 producing meaningless "passes."
 
-What this is for: tests/*.py (359 tests) drive the agent loop with
+What this is for: tests/*.py (361 tests) drive the agent loop with
 MockProvider -- scripted replies -- to prove the *mechanism* is correct
 (dispatch, risk gating, verify, pagination, ...). None of them ever ask a
 real model to reason its way through a task. This suite does exactly
@@ -187,6 +187,18 @@ def _print_report(results: list[EvalResult]) -> int:
     return 0 if not failed else 1
 
 
+def account_problem(result: EvalResult) -> str | None:
+    """The provider refused on account grounds (no credit, bad key), so no
+    later task can tell us anything either."""
+    if result.passed is None:
+        return None
+    for headline in ("run out of credit", "rejected the API key"):
+        if headline in result.detail:
+            return f"your AI provider account has {headline}." if "credit" in headline \
+                else "your AI provider rejected the API key."
+    return None
+
+
 def save_results(results: list[EvalResult], config, path: Path) -> None:
     """Machine-readable copy of the report, so a baseline and a later run
     (e.g. a different LLM_MODEL or DECIDER) can be compared side by side.
@@ -240,6 +252,12 @@ def main(argv: list[str] | None = None) -> int:
         for task in TASKS:
             print(f"Running {task.id}...")
             results.append(run_single_eval(task, eval_config, tmp_path, fixtures_server))
+            if account_problem(results[-1]):
+                # Every remaining task would fail the same way within a second
+                # (seen with an unfunded DeepSeek account: 11/11 "failed" with
+                # nothing learned). Stop and say so instead.
+                print(f"\nStopping: {account_problem(results[-1])} Fix that, then run the evals again.")
+                break
 
     exit_code = _print_report(results)
     if args.save:

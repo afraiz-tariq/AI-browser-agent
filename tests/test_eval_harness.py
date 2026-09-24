@@ -163,3 +163,16 @@ def test_trip_wizard_fixture_walks_three_steps(test_config, tmp_path, fixtures_s
     ], test_config, tmp_path, fixtures_server)
     assert result.passed is True
     assert "Reference: TRIP-LIS-3" in page
+
+
+def test_an_account_problem_stops_the_eval_run():
+    # An unfunded DeepSeek account made all 11 tasks "fail" in a second each;
+    # the runner should stop at the first one and say why.
+    from evals.run_evals import EvalResult, account_problem
+
+    no_credit = EvalResult("t", "d", False, "Task reported failure: WHAT HAPPENED: Your AI provider account has "
+                                            "run out of credit.\nWHY: 402 Insufficient Balance", 0.6, {})
+    assert "run out of credit" in account_problem(no_credit)
+    ordinary = EvalResult("t", "d", False, "Expected 'San Francisco' in the summary", 5.0, {})
+    assert account_problem(ordinary) is None
+    assert account_problem(EvalResult("t", "d", None, "Skipped", 0.0, {})) is None

@@ -22,6 +22,7 @@ the agent loop's point of view.
 from __future__ import annotations
 
 import json
+import re
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -197,6 +198,10 @@ class OpenAIProvider(BaseLLMProvider):
         from openai import OpenAI  # imported lazily so `mock`/tests don't need the package configured
 
         self._client = OpenAI(api_key=api_key, max_retries=max_retries, base_url=base_url or None)
+        # Name the real provider in errors: a DeepSeek failure said just
+        # "OpenAI request failed", which read as the wrong company.
+        host = re.sub(r"^https?://", "", base_url or "").split("/")[0]
+        self._where = f" ({host})" if host else ""
         self._model = model
         self._tools = _openai_tools(tool_specs)
         self._settings: dict[str, Any] = {"tool_choice": "required", "temperature": 0}
@@ -231,7 +236,7 @@ class OpenAIProvider(BaseLLMProvider):
             except Exception as e:  # network errors, auth errors, rate limits, etc.
                 rejected = self._rejected_setting(e)
                 if rejected is None:
-                    raise LLMError(f"OpenAI request failed: {e}") from e
+                    raise LLMError(f"OpenAI request failed{self._where}: {e}") from e
                 self._settings.pop(rejected)  # then retry without it; each setting can only be dropped once
 
         if response.usage is not None:

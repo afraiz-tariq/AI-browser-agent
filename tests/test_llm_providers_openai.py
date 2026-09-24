@@ -222,3 +222,14 @@ def test_openai_base_url_overrides_the_preset_for_local_servers():
                     openai_base_url="http://localhost:1234/v1")
     client = LLMClient.from_config(config, SOME_TOOL_SPECS)
     assert str(client._provider._client.base_url).startswith("http://localhost:1234")
+
+
+def test_errors_name_the_real_provider():
+    provider = OpenAIProvider("k", "m", SOME_TOOL_SPECS, base_url="https://api.deepseek.com")
+
+    def fail(**kwargs):
+        raise RuntimeError("Error code: 402 - Insufficient Balance")
+
+    provider._client.chat.completions.create = fail
+    with pytest.raises(LLMError, match=r"OpenAI request failed \(api\.deepseek\.com\)"):
+        provider.decide("s", "u")
