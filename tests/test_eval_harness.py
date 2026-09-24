@@ -10,7 +10,7 @@ the same "verify the mechanism, not the model" split as the rest of tests/.
 """
 import json
 
-from llm import LLMClient, MockProvider
+from llm import ZERO_USAGE, LLMClient, MockProvider
 
 from evals.run_evals import run_single_eval
 from evals.tasks import TASK_EXCEL_WRITE_ROUNDTRIP, TASK_MCP_FETCH, EvalTask
@@ -38,9 +38,9 @@ def test_passing_task_reports_passed_true_with_token_usage(test_config, tmp_path
 
     assert result.passed is True
     assert "correct value" in result.detail.lower()
-    # MockProvider never touches token counters -- {0, 0} is the honest
+    # MockProvider never touches token counters -- all zeros is the honest
     # answer for a scripted run, read back from the saved output record.
-    assert result.token_usage == {"input_tokens": 0, "output_tokens": 0}
+    assert result.token_usage == ZERO_USAGE
 
 
 def test_failing_task_reports_passed_false_with_detail(test_config, tmp_path):

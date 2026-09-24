@@ -14,6 +14,13 @@ full commit message.
 
 ## 2026-09-24
 
+- Anthropic calls now prompt-cache the system prompt + tool definitions
+  (~2.6k tokens, ~3.8k with the Windows arm; identical every step), so steps
+  after the first bill that part at ~0.1x input price. Token usage now also
+  records cache reads/writes, since the SDK's `input_tokens` excludes cached
+  tokens. Not yet measured live (needs an API key): check
+  `cache_read_input_tokens` > 0 in `output/*.json` after a multi-step task.
+
 - `observe()` now reads the whole page in one in-page snapshot instead of
   ~7 Playwright round trips per element: 41-59x faster on the generated
   benchmark pages (50 elements: 1,169 -> 29 ms; 200: 4,352 -> 74 ms; 500:

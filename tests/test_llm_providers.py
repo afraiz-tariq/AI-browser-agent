@@ -128,3 +128,58 @@ def test_max_retries_is_passed_through_to_the_sdk_client():
 def test_max_retries_defaults_to_two():
     provider = _provider()
     assert provider._client.max_retries == 2
+
+
+def test_system_prompt_is_sent_with_a_cache_marker():
+    # Tools + system are identical on every step of a task; one cache marker
+    # on the system block caches both (tools render before system), so
+    # steps after the first read that prefix at ~0.1x the input price.
+    provider = _provider()
+    sent = {}
+
+    def create(**kwargs):
+        sent.update(kwargs)
+        return _response(_tool_use_block("wait", {}))
+
+    provider._client.messages.create = create
+    provider.decide("the system prompt", "user prompt")
+
+    assert sent["system"] == [
+        {"type": "text", "text": "the system prompt", "cache_control": {"type": "ephemeral"}}
+    ]
+    assert sent["messages"] == [{"role": "user", "content": "user prompt"}]
+
+
+def test_cache_reads_and_writes_are_counted_separately_from_input():
+    # With caching on, the SDK's input_tokens excludes cached tokens. Unless
+    # cache reads/writes are recorded too, a task's recorded input would
+    # silently shrink after step 1 and under-state its real size and cost.
+    provider = _provider()
+    usage = SimpleNamespace(
+        input_tokens=900, output_tokens=40, cache_read_input_tokens=3000, cache_creation_input_tokens=0,
+    )
+    provider._client.messages.create = lambda **kwargs: SimpleNamespace(
+        content=[_tool_use_block("wait", {})], usage=usage,
+    )
+    provider.decide("system prompt", "user prompt")
+
+    assert provider.total_input_tokens == 900
+    assert provider.total_cache_read_tokens == 3000
+    assert provider.total_cache_creation_tokens == 0
+
+
+def test_get_usage_reports_cache_fields():
+    from llm import LLMClient
+
+    provider = _provider()
+    provider._client.messages.create = lambda **kwargs: SimpleNamespace(
+        content=[_tool_use_block("wait", {})],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=2, cache_read_input_tokens=0,
+                              cache_creation_input_tokens=2600),
+    )
+    client = LLMClient(provider)
+    client.decide_next_action("Task.", [], None)
+
+    assert client.get_usage() == {
+        "input_tokens": 5, "output_tokens": 2, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 2600,
+    }

@@ -32,7 +32,7 @@ from browser import BrowserSession, BrowserToolProvider
 from config import OUTPUT_DIR, load_config
 from errors import TaskCannotBeCompleted, explain
 from excel_tools import ExcelSession, ExcelToolProvider
-from llm import LLMClient, LLMError
+from llm import ZERO_USAGE, LLMClient, LLMError
 from logger import TaskLogger
 from mcp_tools import MCPToolProvider, build_brave_search_provider, build_fetch_provider, build_filesystem_provider
 from tool_provider import ToolProvider, ToolSpec, requires_confirmation
@@ -469,9 +469,9 @@ def run_task(
         verification_warnings=verification_warnings,
         # llm can still be None if provider/tool-spec construction itself
         # raised before it was ever assigned (e.g. an MCP server failed to
-        # start) -- no LLM calls happened in that case, so {0, 0} is the
+        # start) -- no LLM calls happened in that case, so all zeros is the
         # honest answer, not a missing one.
-        token_usage=llm.get_usage() if llm is not None else {"input_tokens": 0, "output_tokens": 0},
+        token_usage=llm.get_usage() if llm is not None else dict(ZERO_USAGE),
         timings=summarize_timings(step_timings),
     )
 
@@ -557,8 +557,8 @@ def _save_output(
     did, not only a record of what it said at the end. `summary` is the
     final answer on success, or the same human-readable explanation
     returned as outcome["result"] on failure. `token_usage` is
-    {"input_tokens", "output_tokens"} accumulated across every real LLM
-    call this task made (see LLMClient.get_usage()) -- {0, 0} for a
+    LLMClient.get_usage()'s input/output/cache token counts accumulated
+    across every real LLM call this task made -- all zeros for a
     MockProvider-driven run, which is accurate, not a placeholder.
     `timings` is summarize_timings()'s per-step observe/decide/act ms, with
     time spent waiting on a human [y/n] answer excluded from act.

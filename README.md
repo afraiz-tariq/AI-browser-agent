@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 226 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 229 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -586,6 +586,13 @@ models later -- nothing else in the code references a specific provider.
   context without resending the whole conversation.
 - If the model repeats the exact same action 3 times in a row, the agent
   assumes it's stuck and stops rather than burning further API calls.
+- With `LLM_PROVIDER=anthropic`, the system prompt and tool definitions
+  (about 2.5-4k tokens, the same on every step) are prompt-cached: from the
+  second step of a task on, that part is billed at about a tenth of the
+  normal input price. Caching needs at least 1,024 prompt tokens on
+  `claude-sonnet-5` but 4,096 on `claude-haiku-4-5`, so on Haiku it usually
+  doesn't kick in. `output/*.json`'s `token_usage` shows it as
+  `cache_read_input_tokens` / `cache_creation_input_tokens`.
 
 ## Error handling
 

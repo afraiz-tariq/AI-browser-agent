@@ -8,7 +8,7 @@ project is developed in -- there's no live API key there -- which is why
 this file refuses to run against LLM_PROVIDER=mock rather than silently
 producing meaningless "passes."
 
-What this is for: tests/*.py (226 tests) drive the agent loop with
+What this is for: tests/*.py (229 tests) drive the agent loop with
 MockProvider -- scripted replies -- to prove the *mechanism* is correct
 (dispatch, risk gating, verify, pagination, ...). None of them ever ask a
 real model to reason its way through a task. This suite does exactly
@@ -106,7 +106,7 @@ def run_single_eval(
             task.teardown(ctx)
 
     record = json.loads(Path(outcome["output_path"]).read_text(encoding="utf-8"))
-    token_usage = record.get("token_usage", {"input_tokens": 0, "output_tokens": 0})
+    token_usage = record.get("token_usage", {"input_tokens": 0, "output_tokens": 0})  # older records lack cache fields
     return EvalResult(task.id, task.description, passed, detail, duration, token_usage, record.get("timings", {}))
 
 
@@ -133,6 +133,8 @@ def speed_summary(results: list[EvalResult]) -> dict:
         "median_seconds_per_task": med([r.duration_s for r in ran]),
         "input_tokens": sum(r.token_usage.get("input_tokens", 0) for r in ran),
         "output_tokens": sum(r.token_usage.get("output_tokens", 0) for r in ran),
+        "cache_read_input_tokens": sum(r.token_usage.get("cache_read_input_tokens", 0) for r in ran),
+        "cache_creation_input_tokens": sum(r.token_usage.get("cache_creation_input_tokens", 0) for r in ran),
     }
 
 
@@ -164,6 +166,8 @@ def _print_report(results: list[EvalResult]) -> int:
     print(f"{len(passed)}/{len(ran)} passed, {len(skipped)} skipped.")
     print(f"Total token usage across all ran tasks: {total_in} input, {total_out} output.")
     speed = speed_summary(results)
+    print(f"Prompt cache: {speed['cache_read_input_tokens']} tokens read from cache (~0.1x price), "
+          f"{speed['cache_creation_input_tokens']} written (~1.25x).")
     print(f"Median per step: decide {speed['median_decide_ms']} ms, observe {speed['median_observe_ms']} ms, "
           f"act {speed['median_act_ms']} ms. Median per task: {speed['median_steps_per_task']} steps, "
           f"{speed['median_seconds_per_task']} s.")
