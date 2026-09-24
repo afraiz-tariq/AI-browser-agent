@@ -138,3 +138,32 @@ def test_a_stop_pressed_during_the_decision_prevents_that_action(test_config, fi
     assert outcome["success"] is False and "Stopped by you" in outcome["result"]
     record = json.loads(open(outcome["output_path"], encoding="utf-8").read())
     assert record["artifacts"] == []  # the goto was never executed
+
+
+# --- push-to-talk key handling (Windows key polling, faked here) ------------
+
+from voice import PushToTalk, key_code  # noqa: E402
+
+
+def test_key_names_map_to_windows_virtual_key_codes():
+    assert key_code("ctrl_r") == 0xA3
+    assert key_code("F9") == 0x78 and key_code("f10") == 0x79
+    assert key_code("alt_gr") == 0xA5
+    assert key_code("k") == ord("K") and key_code("5") == ord("5")
+    with pytest.raises(ValueError):
+        key_code("definitely_not_a_key")
+
+
+def test_holding_the_talk_key_starts_once_and_releasing_sends():
+    ptt = PushToTalk()
+    samples = [(False, False), (True, False), (True, False), (True, False), (False, False), (False, False)]
+    events = [ptt.update(talk, stop) for talk, stop in samples]
+    # Held for three samples (~60 ms each poll): one start, one send -- no
+    # repeats while held, the way a key-repeat would have produced.
+    assert events == [[], ["start"], [], [], ["send"], []]
+
+
+def test_stop_key_fires_once_per_press():
+    ptt = PushToTalk()
+    events = [ptt.update(False, stop) for stop in (False, True, True, False, True)]
+    assert events == [[], ["stop"], [], [], ["stop"]]

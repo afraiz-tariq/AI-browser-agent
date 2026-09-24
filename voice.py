@@ -26,13 +26,13 @@ Privacy by design (docs/JEV_VOICE_PLAN.md Phase 3):
 - Replies are spoken with Windows' own speech (pyttsx3 / SAPI5).
 
 Optional dependencies, only needed for this file (see requirements.txt):
-    pip install faster-whisper sounddevice pynput pyttsx3
+    pip install faster-whisper sounddevice pyttsx3
 The first run downloads the Whisper model (VOICE_WHISPER_MODEL, ~150 MB for
 base.en) from Hugging Face once; after that it works offline.
 
-The hardware-facing pieces (Recorder, Transcriber, Speaker, the hotkey
-listener) are small classes kept apart from the logic (is_yes,
-make_voice_confirm, VoiceAssistant), so tests/test_voice.py drives the logic
+The hardware-facing pieces (Recorder, Transcriber, Speaker, the Windows
+key polling) are small classes kept apart from the logic (is_yes,
+make_voice_confirm, VoiceAssistant, PushToTalk), so tests/test_voice.py drives the logic
 with fakes -- no microphone, no model, no network.
 """
 from __future__ import annotations
@@ -43,6 +43,7 @@ import queue
 import re
 import sys
 import threading
+import time
 from typing import Callable
 
 SAMPLE_RATE = 16000
@@ -204,31 +205,80 @@ class Speaker:
         self._engine.runAndWait()
 
 
-def _parse_key(name: str):
-    from pynput import keyboard
+# Windows virtual-key codes for the names VOICE_PTT_KEY / VOICE_STOP_KEY
+# accept. Keys are read by polling GetAsyncKeyState (~50x a second), not by
+# a keyboard hook: on the first real try (2026-09-24) pynput's hook received
+# no key presses at all on the user's PC, while polling needs no hook, no
+# extra package and no admin rights.
+VK_CODES = {
+    "ctrl_r": 0xA3, "ctrl_l": 0xA2, "ctrl": 0x11,
+    "alt_r": 0xA5, "alt_gr": 0xA5, "alt_l": 0xA4,
+    "shift_r": 0xA1, "shift_l": 0xA0,
+    "caps_lock": 0x14, "scroll_lock": 0x91, "pause": 0x13, "insert": 0x2D,
+    "home": 0x24, "end": 0x23, "page_up": 0x21, "page_down": 0x22, "menu": 0x5D,
+    **{f"f{n}": 0x6F + n for n in range(1, 25)},  # f1 = 0x70 ... f24 = 0x87
+}
 
+
+def key_code(name: str) -> int:
+    """VK code for a key name (see VK_CODES), or a single letter/digit."""
     name = name.strip().lower()
-    if hasattr(keyboard.Key, name):
-        return getattr(keyboard.Key, name)
-    if len(name) == 1:
-        return keyboard.KeyCode.from_char(name)
-    raise ValueError(f"Unknown key name {name!r} -- use e.g. ctrl_r, f9, f10, alt_gr, or a single character.")
+    if name in VK_CODES:
+        return VK_CODES[name]
+    if len(name) == 1 and name.isalnum():
+        return ord(name.upper())
+    raise ValueError(
+        f"Unknown key name {name!r} -- use e.g. ctrl_r, f9, f10, alt_gr, scroll_lock, or a single letter/digit."
+    )
+
+
+class PushToTalk:
+    """Turns "is the key down right now?" samples into events: 'start' when
+    the talk key goes down, 'send' when it comes back up, 'stop' when the
+    stop key goes down. Pure logic, so tests/ can drive it without a
+    keyboard; the Windows polling loop in main() just feeds it samples."""
+
+    def __init__(self):
+        self._talk_was_down = False
+        self._stop_was_down = False
+
+    def update(self, talk_down: bool, stop_down: bool) -> list[str]:
+        events = []
+        if talk_down and not self._talk_was_down:
+            events.append("start")
+        elif not talk_down and self._talk_was_down:
+            events.append("send")
+        if stop_down and not self._stop_was_down:
+            events.append("stop")
+        self._talk_was_down, self._stop_was_down = talk_down, stop_down
+        return events
+
+
+def _key_is_down():
+    """Returns is_down(vk) -> bool, reading the key's live state from Windows."""
+    if sys.platform != "win32":
+        raise OSError("voice.py's push-to-talk key reading is Windows-only.")
+    import ctypes
+
+    get_state = ctypes.windll.user32.GetAsyncKeyState
+    return lambda vk: bool(get_state(vk) & 0x8000)
 
 
 def key_test(seconds: float = 20.0) -> None:
-    """Print every key press exactly as the listener sees it -- the name to
-    put in VOICE_PTT_KEY / VOICE_STOP_KEY. If nothing prints at all, the
-    keyboard hook isn't receiving events (see README troubleshooting)."""
-    from pynput import keyboard
-
+    """Print the name of every supported key as it's pressed -- the names
+    VOICE_PTT_KEY / VOICE_STOP_KEY accept."""
+    is_down = _key_is_down()
+    names = {**{k: v for k, v in VK_CODES.items() if k not in ("alt_gr", "ctrl")},
+             **{c: ord(c.upper()) for c in "abcdefghijklmnopqrstuvwxyz0123456789"}}
     print(f"Press some keys (including the one you want for talking). Showing them for {seconds:.0f} s...")
-
-    def show(key) -> None:
-        name = key.name if isinstance(key, keyboard.Key) else getattr(key, "char", None) or repr(key)
-        print(f"  pressed: {name}")
-
-    with keyboard.Listener(on_press=show) as listener:
-        listener.join(seconds)
+    was_down: set[str] = set()
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        down = {name for name, vk in names.items() if is_down(vk)}
+        for name in sorted(down - was_down):
+            print(f"  pressed: {name}")
+        was_down = down
+        time.sleep(0.02)
     print("Done. Use a name shown above as VOICE_PTT_KEY in .env (e.g. VOICE_PTT_KEY=f9).")
 
 
@@ -257,7 +307,11 @@ def main() -> None:
 
     try:
         if args.keys:
-            key_test()
+            try:
+                key_test()
+            except OSError as e:
+                print(e)
+                sys.exit(1)
             return
         from config import load_config
 
@@ -269,7 +323,7 @@ def main() -> None:
     except ModuleNotFoundError as e:
         print(f"Missing package '{e.name}'. Is the project's environment active? Your prompt should start with "
               "(.venv) -- if not, run: .venv\\Scripts\\activate\n"
-              "Voice also needs: pip install faster-whisper sounddevice pynput pyttsx3")
+              "Voice also needs: pip install faster-whisper sounddevice pyttsx3")
         sys.exit(1)
 
     problems = config.validate()
@@ -279,14 +333,16 @@ def main() -> None:
             print(f"  - {p}")
         sys.exit(1)
     try:
-        from pynput import keyboard
-
-        ptt_key, stop_key = _parse_key(config.voice_ptt_key), _parse_key(config.voice_stop_key)
+        ptt_vk, stop_vk = key_code(config.voice_ptt_key), key_code(config.voice_stop_key)
+        is_down = _key_is_down()
         recorder = Recorder()
         print(f"Loading the speech model '{config.voice_whisper_model}' (first run downloads it once)...")
         transcriber = Transcriber(config.voice_whisper_model, config.voice_language)
     except ImportError as e:
-        print(f"Voice needs extra packages: pip install faster-whisper sounddevice pynput pyttsx3  ({e})")
+        print(f"Voice needs extra packages: pip install faster-whisper sounddevice pyttsx3  ({e})")
+        sys.exit(1)
+    except (ValueError, OSError) as e:
+        print(f"Voice setup problem: {e}")
         sys.exit(1)
 
     jobs: queue.Queue = queue.Queue()
@@ -315,36 +371,41 @@ def main() -> None:
     threading.Thread(target=worker, daemon=True).start()
     ready.wait()
 
-    def on_press(key) -> None:
-        if key == stop_key and state["busy"]:
-            holder["assistant"].request_stop()
-        elif key == ptt_key and not state["recording"]:  # key repeat sends many presses; start once
-            if state["busy"]:
-                print("  [voice] still working on the last task -- press the stop key to cancel it.")
-                return
-            try:
-                recorder.start()
-            except Exception as e:  # e.g. no microphone, or it's in use -- say so instead of failing silently
-                print(f"  [voice] could not start the microphone: {e}")
-                return
-            state["recording"] = True
-            print("  [voice] listening...")
+    def start_recording() -> None:
+        if state["busy"]:
+            print("  [voice] still working on the last task -- press the stop key to cancel it.")
+            return
+        try:
+            recorder.start()
+        except Exception as e:  # e.g. no microphone, or it's in use -- say so instead of failing silently
+            print(f"  [voice] could not start the microphone: {e}")
+            return
+        state["recording"] = True
+        print("  [voice] listening...")
 
-    def on_release(key) -> None:
-        if key == ptt_key and state["recording"]:
-            state["recording"] = False
-            audio = recorder.stop()
-            print(f"  [voice] got {len(audio) / SAMPLE_RATE:.1f} s of audio, transcribing...")
-            jobs.put(audio)
+    def send_recording() -> None:
+        if not state["recording"]:
+            return
+        state["recording"] = False
+        audio = recorder.stop()
+        print(f"  [voice] got {len(audio) / SAMPLE_RATE:.1f} s of audio, transcribing...")
+        jobs.put(audio)
 
     print(f"Hold {config.voice_ptt_key} to talk, {config.voice_stop_key} to stop a task, Ctrl+C here to quit.")
     print("  (Nothing happens when you hold the key? Run: python voice.py --keys)")
-    with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
-        try:
-            listener.join()
-        except KeyboardInterrupt:
-            print("\nBye.")
-
+    ptt = PushToTalk()
+    try:
+        while True:
+            for event in ptt.update(is_down(ptt_vk), is_down(stop_vk)):
+                if event == "start":
+                    start_recording()
+                elif event == "send":
+                    send_recording()
+                elif event == "stop" and state["busy"]:
+                    holder["assistant"].request_stop()
+            time.sleep(0.02)
+    except KeyboardInterrupt:
+        print("\nBye.")
 
 if __name__ == "__main__":
     main()

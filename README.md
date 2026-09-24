@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 292 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 295 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -456,7 +456,7 @@ Windows arm (only works once `ENABLE_WINDOWS_AUTOMATION=true` -- see
 Control the agent by talking to it (Windows):
 
 ```
-pip install faster-whisper sounddevice pynput pyttsx3
+pip install faster-whisper sounddevice pyttsx3
 python voice.py
 ```
 
@@ -477,11 +477,12 @@ python voice.py
   `base.en`, ~150 MB) once. `small.en` is more accurate but slower; `tiny.en`
   is fastest.
 - For faster steps, combine with `DECIDER=hybrid` (see **Configuration**).
-- **Troubleshooting:** `python voice.py --keys` prints every key press as
-  the program sees it. If holding your key shows a different name, put that
-  name in `VOICE_PTT_KEY`. If nothing prints at all, the keyboard hook isn't
-  getting events; try a plain key like `f9`, and don't run the window you're
-  typing into as administrator unless Python is too. `python voice.py
+- **Troubleshooting:** `python voice.py --keys` prints the name of each key
+  you press, as the program reads it; put the one you want in
+  `VOICE_PTT_KEY`. Keys are read by asking Windows whether they're held
+  down (no keyboard hook), so it works without admin rights; if the window
+  in front runs as administrator and Python doesn't, Windows may hide its
+  key presses. `python voice.py
   --mic-test` records 4 seconds with no key needed and shows what was heard,
   which checks the microphone and speech model on their own. Windows must
   allow microphone access for desktop apps (Settings > Privacy & security >
@@ -575,7 +576,7 @@ each other.
 | `ENABLE_MCP_FILESYSTEM` | `true` adds the read-only filesystem arm (`mcp_read_text_file`, etc.); `false` by default -- see **MCP arm** above |
 | `MCP_FILESYSTEM_ROOT` | Required if `ENABLE_MCP_FILESYSTEM=true` -- the one local folder the agent may read from |
 | `MCP_STARTUP_TIMEOUT_S` | How long to wait for an MCP server to start before giving up; default `90` (an npx-launched server can be slow on a cold npm registry round-trip) |
-| `VOICE_PTT_KEY` | Voice: hold this key to talk (pynput name, default `ctrl_r` = right Ctrl) |
+| `VOICE_PTT_KEY` | Voice: hold this key to talk (default `ctrl_r` = right Ctrl; also `f9`, `alt_gr`, `scroll_lock`, a letter... -- `python voice.py --keys` shows names) |
 | `VOICE_STOP_KEY` | Voice: stops a running task before its next action (default `f10`) |
 | `VOICE_WHISPER_MODEL` | Voice: local speech-to-text model, `tiny.en` / `base.en` (default) / `small.en` |
 | `VOICE_LANGUAGE` | Voice: spoken language code, default `en` (use a multilingual model like `base` for others) |

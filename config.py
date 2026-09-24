@@ -97,7 +97,7 @@ class Config:
 
     # --- Voice front-end (voice.py) ---
     # Push-to-talk key (hold while speaking) and the key that stops a running
-    # task; pynput key names such as ctrl_r, alt_gr, f9, f10.
+    # task; names such as ctrl_r, alt_gr, f9, f10 (see voice.VK_CODES).
     voice_ptt_key: str = field(default_factory=lambda: os.getenv("VOICE_PTT_KEY", "ctrl_r"))
     voice_stop_key: str = field(default_factory=lambda: os.getenv("VOICE_STOP_KEY", "f10"))
     # Local speech-to-text model (faster-whisper): tiny.en / base.en / small.en

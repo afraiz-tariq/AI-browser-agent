@@ -14,6 +14,12 @@ full commit message.
 
 ## 2026-09-24
 
+- Voice push-to-talk no longer uses pynput: on the user's PC its keyboard
+  hook received no key presses at all (`--keys` printed nothing), while the
+  microphone and speech model worked (`--mic-test` heard "open notepad").
+  Keys are now read by polling Windows' `GetAsyncKeyState` ~50x/s: no hook,
+  no extra package, no admin rights. pynput is no longer needed.
+
 - Voice troubleshooting after the first real try (holding the key did
   nothing): `python voice.py --keys` shows which keys the program sees,
   `--mic-test` checks the microphone + speech model without the keyboard, a

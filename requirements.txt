@@ -10,7 +10,6 @@ discord.py>=2.7,<3.0
 # text runs locally; the first run downloads the Whisper model once.
 # faster-whisper
 # sounddevice
-# pynput
 # pyttsx3
 # Optional: only needed if you set LLM_PROVIDER=openai in .env
 # openai>=1.40,<2.0
