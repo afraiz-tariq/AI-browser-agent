@@ -162,6 +162,11 @@ class VoiceAssistant:
         outcome = self.run(
             text + SPOKEN_TASK_HINT, self.config, confirm_callback=self.confirm, should_stop=self.stop_event.is_set,
         )
+        if not outcome.get("success"):
+            # Speak the headline, but show the whole explanation (WHY / WHAT YOU
+            # CAN DO) on screen -- the first failure seen in voice mode only said
+            # "could not be reached", hiding the actual API error.
+            self.log(f"  [voice] task failed:\n{outcome.get('result', '')}")
         self.say(short_for_speech(outcome.get("result", "")) or ("Done." if outcome.get("success") else "That failed."))
         return outcome
 

@@ -14,6 +14,10 @@ full commit message.
 
 ## 2026-09-24
 
+- Voice mode now prints a failed task's full explanation on screen; a
+  failed LLM call had only been spoken as "could not be reached", hiding
+  the actual API error.
+
 - Re-run on the user's PC after the bug-13 fixes: "open notepad and write
   hello world" now really types and verifies; "sum 3 plus 2" took 5 steps
   (one `windows_click_controls` for 3, +, 2, =) instead of 16 and answered

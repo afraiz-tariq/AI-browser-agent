@@ -185,3 +185,13 @@ def test_assistant_flags_when_it_is_listening_for_a_yes_or_no():
     assistant = VoiceAssistant(None, fakes.transcribe, fakes.said.append, listen, fakes.run, log=lambda m: None)
     assert assistant.confirm("Continue?") is True
     assert seen == [True] and assistant.answering.is_set() is False
+
+
+def test_a_failed_task_shows_the_full_reason_on_screen():
+    logged = []
+    failure = ("WHAT HAPPENED: The AI model could not be reached or gave an unusable reply.\n"
+               "WHY: Anthropic request failed: Error code: 529 overloaded\nWHAT YOU CAN DO: retry")
+    assistant = VoiceAssistant(None, lambda a: "open notepad", lambda t: None, lambda s: None,
+                               lambda *a, **k: {"success": False, "result": failure}, log=logged.append)
+    assistant.handle_audio("audio")
+    assert any("529 overloaded" in line for line in logged)
