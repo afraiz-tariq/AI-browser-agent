@@ -32,6 +32,7 @@ One arm = one file implementing `ToolProvider` (`tool_provider.py` is the contra
 | LLM provider calls, tool schema building, token usage | `llm.py` | `test_llm_*.py` |
 | Optional Jev decider (`DECIDER=hybrid`), Claude fallback | `jev.py` | `test_jev.py` |
 | Discord interface, confirm-in-chat | `discord_bot.py` | `test_discord_bot.py` |
+| Voice interface, spoken confirm, stop key | `voice.py` | `test_voice.py` |
 | `.env` parsing/validation | `config.py` | `test_config.py` |
 | Risk-tier/confirmation contract itself | `tool_provider.py` | `test_tool_provider.py` |
 

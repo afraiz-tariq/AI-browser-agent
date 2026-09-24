@@ -8,7 +8,7 @@ project is developed in -- there's no live API key there -- which is why
 this file refuses to run against LLM_PROVIDER=mock rather than silently
 producing meaningless "passes."
 
-What this is for: tests/*.py (270 tests) drive the agent loop with
+What this is for: tests/*.py (292 tests) drive the agent loop with
 MockProvider -- scripted replies -- to prove the *mechanism* is correct
 (dispatch, risk gating, verify, pagination, ...). None of them ever ask a
 real model to reason its way through a task. This suite does exactly

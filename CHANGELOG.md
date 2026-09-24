@@ -14,6 +14,14 @@ full commit message.
 
 ## 2026-09-24
 
+- Added the voice front-end (`python voice.py`): hold right Ctrl to speak a
+  task, local speech-to-text (faster-whisper, audio never leaves the PC),
+  results spoken via Windows SAPI, spoken confirmations where only a plain
+  "yes"/"confirm" continues, and a stop key (F10). `run_task()` gained an
+  optional `should_stop` checked before each step and before each action.
+  Logic tested offline with fakes; the microphone/model/speaker path needs
+  a real run on Windows.
+
 - Jev now also decides steps inside Windows app windows (`DECIDER=hybrid`):
   click a control, type a span of the task into one, or re-read the window's
   controls, always by the exact title from the latest listing; password

@@ -99,6 +99,7 @@ def offer_manual_resolution(url: str, config, dry_run: bool, logger: TaskLogger,
 def run_task(
     task: str, config, dry_run: bool = False, llm_client: LLMClient | None = None,
     confirm_callback: Callable[[str], bool] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict:
     """
     Runs one task end-to-end and returns a result dict. Also writes a log
@@ -113,6 +114,11 @@ def run_task(
     (discord_bot.py) passes its own str -> bool callable instead -- e.g. one
     that posts the question into a chat and blocks for a reply there,
     rather than blocking on a terminal that isn't attached.
+
+    `should_stop`, if given, is checked before each step and again right
+    before an action runs; when it returns True the task stops cleanly with
+    a "stopped by you" failure. voice.py wires its stop key to it -- the
+    spoken equivalent of Ctrl+C that doesn't kill the whole program.
     """
     logger = TaskLogger(Path(__file__).parent / "logs", task)
     user_confirm = confirm_callback or ask_confirmation
@@ -209,6 +215,7 @@ def run_task(
 
         for step in range(1, config.max_steps + 1):
             steps_taken = step
+            _check_stop(should_stop)
             timing: dict = {"step": step}
             step_timings.append(timing)
             # OBSERVE only applies to the browser arm. Before the browser
@@ -392,6 +399,7 @@ def run_task(
                 # The model already has the visible text; nothing to execute.
                 continue
 
+            _check_stop(should_stop)  # the decision above can take seconds; honor a stop pressed meanwhile
             act_started = time.perf_counter()
             confirm_wait["ms"] = 0.0
             try:
@@ -499,6 +507,17 @@ def run_task(
 
     logger.finish(result_summary or "(empty result)")
     return {"success": True, "result": result_summary, "output_path": str(output_path)}
+
+
+def _check_stop(should_stop: Callable[[], bool] | None) -> None:
+    if should_stop is not None and should_stop():
+        raise TaskCannotBeCompleted(
+            explain(
+                "Stopped by you.",
+                "The stop key was pressed, so no further actions were taken.",
+                "Anything already done before the stop (e.g. a page opened) stays as it is.",
+            )
+        )
 
 
 def _dispatch_action(

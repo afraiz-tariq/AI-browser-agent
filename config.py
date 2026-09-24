@@ -95,6 +95,16 @@ class Config:
     # them is as simple as not saving/persisting. See tool_provider.py.
     confirm_r1_actions: bool = field(default_factory=lambda: _bool("CONFIRM_R1_ACTIONS", False))
 
+    # --- Voice front-end (voice.py) ---
+    # Push-to-talk key (hold while speaking) and the key that stops a running
+    # task; pynput key names such as ctrl_r, alt_gr, f9, f10.
+    voice_ptt_key: str = field(default_factory=lambda: os.getenv("VOICE_PTT_KEY", "ctrl_r"))
+    voice_stop_key: str = field(default_factory=lambda: os.getenv("VOICE_STOP_KEY", "f10"))
+    # Local speech-to-text model (faster-whisper): tiny.en / base.en / small.en
+    # -- bigger is more accurate and slower. Language "en" for English.
+    voice_whisper_model: str = field(default_factory=lambda: os.getenv("VOICE_WHISPER_MODEL", "base.en"))
+    voice_language: str = field(default_factory=lambda: os.getenv("VOICE_LANGUAGE", "en"))
+
     # --- Discord bot interface (discord_bot.py) ---
     discord_bot_token: str = field(default_factory=lambda: os.getenv("DISCORD_BOT_TOKEN", ""))
     discord_allowed_user_id: int = field(default_factory=lambda: _int("DISCORD_ALLOWED_USER_ID", 0))

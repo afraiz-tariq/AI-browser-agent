@@ -6,6 +6,12 @@ anthropic>=0.34,<1.0
 httpx>=0.27,<1.0
 openpyxl>=3.1,<4.0
 discord.py>=2.7,<3.0
+# Optional: only needed for the voice front-end (python voice.py). Speech-to-
+# text runs locally; the first run downloads the Whisper model once.
+# faster-whisper
+# sounddevice
+# pynput
+# pyttsx3
 # Optional: only needed if you set LLM_PROVIDER=openai in .env
 # openai>=1.40,<2.0
 # Optional: only needed if you turn on ANY of the ENABLE_MCP_* flags in

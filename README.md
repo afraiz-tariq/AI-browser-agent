@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 270 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 292 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -295,6 +295,7 @@ The plan discussed for extending this beyond the browser:
 ai_browser_agent/
 ├── agent.py          # CLI entry point + the observe/decide/act/verify loop
 ├── discord_bot.py     # Discord bot interface: calls run_task() with a chat-based confirm_callback
+├── voice.py           # Voice interface: push-to-talk, local speech-to-text, spoken results and confirmations
 ├── browser.py         # Browser arm: Playwright wrapper (launch Chrome, observe page, run actions) + BrowserToolProvider
 ├── excel_tools.py      # Excel arm: openpyxl wrapper (open/read/write/save .xlsx files) + ExcelToolProvider
 ├── mcp_tools.py        # MCP arm (optional): wraps an MCP server (e.g. the "fetch" server) as a ToolProvider
@@ -450,6 +451,33 @@ Windows arm (only works once `ENABLE_WINDOWS_AUTOMATION=true` -- see
    `pip install pywinauto`, try task #12 above -- confirms the arm can
    launch a real app, type into it, and read back its own result.
 
+## Voice interface
+
+Control the agent by talking to it (Windows):
+
+```
+pip install faster-whisper sounddevice pynput pyttsx3
+python voice.py
+```
+
+- **Hold right Ctrl** (`VOICE_PTT_KEY`) while you say a task, e.g. "Open
+  Notepad and type hello world", and release it. The agent runs the task
+  exactly like `python agent.py` would, then **says the result** aloud.
+- **Press F10** (`VOICE_STOP_KEY`) to stop a running task before its next
+  action. Ctrl+C in the window quits.
+- **Confirmations are spoken.** Before a risky action the agent asks aloud
+  and listens for ~4 seconds. **Only a plain "yes" or "confirm"
+  continues**; silence, "no", "yes please", or anything it can't make out
+  declines, the same as typing `n`.
+- **Privacy:** the microphone records only while the key is held (and for
+  the few seconds after a confirmation question). Speech-to-text runs on
+  your PC (faster-whisper); audio is never uploaded or saved. Only the
+  transcribed sentence becomes the task text.
+- The first run downloads the speech model (`VOICE_WHISPER_MODEL`, default
+  `base.en`, ~150 MB) once. `small.en` is more accurate but slower; `tiny.en`
+  is fastest.
+- For faster steps, combine with `DECIDER=hybrid` (see **Configuration**).
+
 ## Discord bot interface
 
 `discord_bot.py` lets you DM the agent a task from your phone (or any
@@ -538,6 +566,10 @@ each other.
 | `ENABLE_MCP_FILESYSTEM` | `true` adds the read-only filesystem arm (`mcp_read_text_file`, etc.); `false` by default -- see **MCP arm** above |
 | `MCP_FILESYSTEM_ROOT` | Required if `ENABLE_MCP_FILESYSTEM=true` -- the one local folder the agent may read from |
 | `MCP_STARTUP_TIMEOUT_S` | How long to wait for an MCP server to start before giving up; default `90` (an npx-launched server can be slow on a cold npm registry round-trip) |
+| `VOICE_PTT_KEY` | Voice: hold this key to talk (pynput name, default `ctrl_r` = right Ctrl) |
+| `VOICE_STOP_KEY` | Voice: stops a running task before its next action (default `f10`) |
+| `VOICE_WHISPER_MODEL` | Voice: local speech-to-text model, `tiny.en` / `base.en` (default) / `small.en` |
+| `VOICE_LANGUAGE` | Voice: spoken language code, default `en` (use a multilingual model like `base` for others) |
 | `DISCORD_BOT_TOKEN` | Bot token for `discord_bot.py`; it refuses to start without one |
 | `DISCORD_ALLOWED_USER_ID` | Your Discord user ID; `discord_bot.py` ignores everyone else |
 | `ENABLE_WINDOWS_AUTOMATION` | `true` adds the Windows desktop automation arm (`windows_*`); `false` by default, Windows-only -- see **Windows desktop automation arm** above |

@@ -156,6 +156,13 @@ Each phase ends with `pytest tests/ -q` green and, where marked, a real-run chec
 - Emergency stop hotkey checked before every dispatch.
 - **Exit:** a 10-command spoken session on the real machine (open app, go to site, search, type, scroll, volume, one browser goal, one Windows goal, one declined confirmation, one emergency stop), with logs as evidence.
 
+**Status 2026-09-24:** built, logic offline-tested, not yet run on real hardware.
+- `voice.py` has push-to-talk (right Ctrl), faster-whisper speech-to-text on the PC, pyttsx3/SAPI replies, spoken confirmation (plain "yes"/"confirm" only, otherwise fail-closed), and a stop key (F10) wired to a new `run_task(should_stop=...)`.
+- Deliberately deferred:
+  - Rocky's one-request fast path for simple commands (volume, media keys, "open X"). Every utterance currently goes through `run_task`, so "open notepad" costs about 2 Claude steps. Add the fast path next if that feels slow in use.
+  - A wake word. Push-to-talk is simpler and more private.
+- The exit check from this phase still stands: a 10-command spoken session on the real machine.
+
 ### Phase 4: Windows arm on Jev
 - Build the element table from `windows_list_controls` output and use the same operation + target heads as the browser. Keep `invoke()`, paced `type_keys()`, exact-title matching and dynamic click risk unchanged.
 - **Exit:** the Notepad and Calculator end-to-end tasks from bugs 9–11 pass with `DECIDER=hybrid`.
