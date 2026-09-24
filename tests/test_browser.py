@@ -3,6 +3,8 @@ Tests for browser.py against the local fixture site (no real internet
 needed). Verifies the pieces the agent loop depends on: navigation,
 DOM observation, typing+submit, login-wall detection.
 """
+import json
+
 import pytest
 
 from browser import BrowserSession
@@ -379,7 +381,8 @@ def test_labels_come_from_label_elements_and_aria_labelledby(test_config, fixtur
 # --- a plain search submit doesn't ask ---------------------------------------
 
 @pytest.mark.parametrize("label, is_search", [
-    ("검색", True),                  # Google: <textarea name=q> in <form role=search action=/search>
+    ("검색", True),                  # Google: <textarea name=q> in <form role=search>, with a file field
+    ("Second-button post", True),    # Enter uses the FIRST submit button, which is a GET
     ("Wiki search", True),           # type=search in a GET form
     ("Post search", False),          # POST: submitting may change something
     ("Comment box", False),          # a GET form, but nothing says "search"
@@ -415,3 +418,19 @@ def test_the_fixture_search_engine_counts_as_a_search(test_config, fixtures_serv
         assert session.is_search_submit(box) is True
     finally:
         session.stop()
+
+
+def test_translate_offer_is_switched_off_in_the_agents_profile(tmp_path):
+    from browser import turn_off_translate_offer
+
+    prefs = tmp_path / "Default" / "Preferences"
+    prefs.parent.mkdir()
+    prefs.write_text(json.dumps({"profile": {"name": "agent"}}), encoding="utf-8")
+    turn_off_translate_offer(tmp_path)
+    saved = json.loads(prefs.read_text(encoding="utf-8"))
+    assert saved["translate"]["enabled"] is False and saved["profile"]["name"] == "agent"
+
+    turn_off_translate_offer(tmp_path / "no-profile-yet")  # first run: nothing to change, no error
+    prefs.write_text("not json", encoding="utf-8")
+    turn_off_translate_offer(tmp_path)  # a damaged file is left alone
+    assert prefs.read_text(encoding="utf-8") == "not json"

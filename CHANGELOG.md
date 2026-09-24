@@ -19,7 +19,10 @@ full commit message.
   search (a GET search form) is now R1, so it no longer asks; the voice
   confirm asks once more on silence (listening 5 s, not 4) instead of
   declining, and the failure message no longer claims "User declined".
-  Chrome's translate pop-up is turned off.
+  Chrome's translate pop-up is turned off (in the agent's own Chrome
+  profile). Follow-up the same day: Google still asked, most likely because
+  its search form holds a hidden file field (search by image), which the
+  first check wrongly treated as "not just a search"; fixed.
 
 - "Take a screenshot" works now. A voice run drove the Snipping Tool and
   spent all 20 steps on its capture overlay, which waits for a mouse drag

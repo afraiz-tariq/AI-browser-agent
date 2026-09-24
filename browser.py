@@ -18,7 +18,9 @@ a Phase 1 prototype.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from playwright.sync_api import Browser, BrowserContext, Page, TimeoutError as PWTimeout, sync_playwright
 
@@ -149,6 +151,24 @@ class Observation:
     total_text_length: int
 
 
+def turn_off_translate_offer(profile_dir: Path) -> None:
+    """Switch off Chrome's "Translate this page?" bubble in the agent's own
+    Chrome profile (a setting, like unticking it in Chrome). Playwright's
+    launch flags already disable it, yet a voice run on a Korean Google page
+    still showed it. The bubble is outside the page, so it never blocked the
+    agent, but a translated page would change text under it. Best effort:
+    a missing or unreadable settings file is left alone."""
+    prefs_path = profile_dir / "Default" / "Preferences"
+    try:
+        prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+        if prefs.get("translate", {}).get("enabled") is False:
+            return
+        prefs.setdefault("translate", {})["enabled"] = False
+        prefs_path.write_text(json.dumps(prefs), encoding="utf-8")
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
 # See BrowserSession.is_search_submit(). Google's box is a <textarea
 # name="q"> in <form role="search" action="/search"> (GET); YouTube's is
 # name="search_query" in action="/results"; Wikipedia's is type="search".
@@ -156,7 +176,13 @@ _SEARCH_SUBMIT_JS = r"""el => {
   const form = el.form || el.closest('form');
   if (!form || !['input', 'textarea'].includes(el.tagName.toLowerCase())) return false;
   if ((form.getAttribute('method') || 'get').toLowerCase() !== 'get') return false;
-  if (form.querySelector('input[type=password], input[type=file], [formmethod]:not([formmethod=get i])')) return false;
+  if (form.querySelector('input[type=password]')) return false;
+  // Enter submits through the form's default (first) submit button, so only
+  // that button can switch the method to POST. A file field doesn't matter:
+  // GET never uploads file contents, and Google's form holds a hidden one
+  // for search-by-image.
+  const button = form.querySelector('button:not([type]), button[type=submit i], input[type=submit i], input[type=image i]');
+  if (button && (button.getAttribute('formmethod') || 'get').toLowerCase() !== 'get') return false;
   const name = (el.getAttribute('name') || '').toLowerCase();
   const action = (form.getAttribute('action') || '').toLowerCase();
   return (el.getAttribute('type') || '').toLowerCase() === 'search'
@@ -191,10 +217,7 @@ class BrowserSession:
 
     def start(self) -> None:
         self._playwright = sync_playwright().start()
-        # Chrome's "Translate this page?" bubble sits outside the page (the
-        # agent never sees it), but a translated page would change the text
-        # under the agent's feet -- and it's clutter on a voice run.
-        launch_kwargs = {"headless": self.config.headless, "args": ["--disable-features=Translate"]}
+        launch_kwargs = {"headless": self.config.headless}
         if self.config.chrome_executable_path:
             launch_kwargs["executable_path"] = self.config.chrome_executable_path
         else:
@@ -203,6 +226,7 @@ class BrowserSession:
             launch_kwargs["channel"] = self.config.chrome_channel
 
         if self.config.use_persistent_profile:
+            turn_off_translate_offer(Path(self.config.chrome_user_data_dir))
             # A persistent profile means cookies/logins the *user* already
             # performed manually in this profile carry over between runs,
             # without the agent ever handling credentials itself.
