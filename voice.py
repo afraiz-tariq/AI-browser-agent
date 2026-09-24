@@ -91,6 +91,7 @@ def make_voice_confirm(
 
     def confirm(prompt: str) -> bool:
         say(f"{prompt} Say yes or no.")
+        log(f"  [voice] listening for your yes or no ({seconds:.0f} s, no key needed)...")
         try:
             heard = transcribe(listen(seconds))
         except Exception as e:  # a microphone or model error must never mean "yes"
@@ -114,7 +115,18 @@ class VoiceAssistant:
         self.log = log
         self.run = run
         self.stop_event = threading.Event()
-        self.confirm = make_voice_confirm(listen, transcribe, say, log)
+        # Set while a confirmation question is listening for yes/no, so the
+        # key loop can say "no key needed" instead of "still working".
+        self.answering = threading.Event()
+
+        def listen_for_answer(seconds: float):
+            self.answering.set()
+            try:
+                return listen(seconds)
+            finally:
+                self.answering.clear()
+
+        self.confirm = make_voice_confirm(listen_for_answer, transcribe, say, log)
 
     def handle_audio(self, audio) -> dict | None:
         """Returns run_task's outcome, or None if nothing usable was said."""
@@ -373,7 +385,10 @@ def main() -> None:
 
     def start_recording() -> None:
         if state["busy"]:
-            print("  [voice] still working on the last task -- press the stop key to cancel it.")
+            if holder["assistant"].answering.is_set():
+                print("  [voice] (no need to hold the key for yes/no -- just say it)")
+            else:
+                print("  [voice] still working on the last task -- press the stop key to cancel it.")
             return
         try:
             recorder.start()

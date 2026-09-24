@@ -141,6 +141,11 @@ class Config:
     # regardless of this flag or CONFIRM_SENSITIVE_ACTIONS/CONFIRM_R1_ACTIONS
     # -- see windows_tools.py and tool_provider.py's requires_confirmation().
     enable_windows_automation: bool = field(default_factory=lambda: _bool("ENABLE_WINDOWS_AUTOMATION", False))
+    # Apps that open without a [y/n] when launched by bare name with no
+    # arguments (windows_tools.DEFAULT_SAFE_APPS). Comma-separated; empty
+    # means "confirm every launch", as before.
+    safe_apps: str = field(default_factory=lambda: os.getenv(
+        "SAFE_APPS", "notepad.exe,calc.exe,mspaint.exe,snippingtool.exe,explorer.exe"))
 
     def validate(self) -> list[str]:
         """Return a list of human-readable problems, empty if config is OK."""

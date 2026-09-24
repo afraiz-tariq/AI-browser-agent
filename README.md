@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 295 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 305 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -189,7 +189,7 @@ Controls are addressed by index from the most recent `windows_list_controls`
 call for that window -- mirrors the browser arm's `observe()` ->
 `click(index)` pattern exactly, never a name/selector the model guesses.
 
-- `windows_launch_app(path, args)` -- R2.
+- `windows_launch_app(path, args)` -- R2, except a plain launch of a safe-listed app (`SAFE_APPS`: bare name, no args), which is R0.
 - `windows_list_windows()` -- R0.
 - `windows_list_controls(window_title)` -- R0. **Call this again after any
   click/type action, before reading a control affected by it** -- some
@@ -216,6 +216,11 @@ keyword list (browser.py's list plus Windows-relevant additions:
 whatever button gets pressed afterward. `windows_launch_app` and
 `windows_close_window` stay R2 (default-confirm, tunable off): there's no
 control-text signal to judge a whole-app-launch or whole-window-close by.
+The one exception: launching an app on the `SAFE_APPS` list (default:
+Notepad, Calculator, Paint, Snipping Tool, File Explorer) by its bare name
+with no arguments doesn't ask -- opening one changes nothing by itself. A
+folder path (a look-alike `notepad.exe` elsewhere) or any arguments still
+ask; set `SAFE_APPS=` empty to be asked before every launch.
 This started as "every mutating action always confirms, not configurable
 off" -- the right conservative starting point before `windows_list_controls`
 existed to give real ground truth to judge risk by -- and was loosened
@@ -582,6 +587,7 @@ each other.
 | `VOICE_LANGUAGE` | Voice: spoken language code, default `en` (use a multilingual model like `base` for others) |
 | `DISCORD_BOT_TOKEN` | Bot token for `discord_bot.py`; it refuses to start without one |
 | `DISCORD_ALLOWED_USER_ID` | Your Discord user ID; `discord_bot.py` ignores everyone else |
+| `SAFE_APPS` | Apps that open without a `[y/n]` when launched by bare name with no arguments; default `notepad.exe,calc.exe,mspaint.exe,snippingtool.exe,explorer.exe`, empty = always ask |
 | `ENABLE_WINDOWS_AUTOMATION` | `true` adds the Windows desktop automation arm (`windows_*`); `false` by default, Windows-only -- see **Windows desktop automation arm** above |
 
 Changing `LLM_PROVIDER`/`LLM_MODEL` is the only thing needed to switch

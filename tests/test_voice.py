@@ -167,3 +167,16 @@ def test_stop_key_fires_once_per_press():
     ptt = PushToTalk()
     events = [ptt.update(False, stop) for stop in (False, True, True, False, True)]
     assert events == [[], ["stop"], [], [], ["stop"]]
+
+
+def test_assistant_flags_when_it_is_listening_for_a_yes_or_no():
+    seen = []
+    fakes = _Fakes(["Yes."])
+
+    def listen(seconds):
+        seen.append(assistant.answering.is_set())
+        return "audio"
+
+    assistant = VoiceAssistant(None, fakes.transcribe, fakes.said.append, listen, fakes.run, log=lambda m: None)
+    assert assistant.confirm("Continue?") is True
+    assert seen == [True] and assistant.answering.is_set() is False

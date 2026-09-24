@@ -182,7 +182,8 @@ def run_task(
             # so no close()/cleanup path is needed in the finally below --
             # see WindowsSession's docstring.
             windows_session = WindowsSession()
-            providers.append(WindowsToolProvider(windows_session))
+            safe_apps = frozenset(a for a in config.safe_apps.split(",") if a.strip())
+            providers.append(WindowsToolProvider(windows_session, safe_apps=safe_apps))
 
         tool_specs: list[ToolSpec] = []
         tool_owner: dict[str, ToolProvider] = {}

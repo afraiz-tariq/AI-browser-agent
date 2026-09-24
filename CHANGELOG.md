@@ -14,6 +14,13 @@ full commit message.
 
 ## 2026-09-24
 
+- First working voice run ("open notepad": heard, launched, answered).
+  At the user's request, opening a safe-listed app (`SAFE_APPS`, default
+  Notepad/Calculator/Paint/Snipping Tool/Explorer) by bare name with no
+  arguments no longer asks `[y/n]`; any path, arguments or other app still
+  does. Voice now says it's listening for a yes/no (no key needed) instead
+  of "still working" when the key is pressed during a confirmation.
+
 - Voice push-to-talk no longer uses pynput: on the user's PC its keyboard
   hook received no key presses at all (`--keys` printed nothing), while the
   microphone and speech model worked (`--mic-test` heard "open notepad").

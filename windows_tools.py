@@ -523,13 +523,32 @@ class WindowsSession:
         return f"Closed '{window_title}'."
 
 
+# Apps whose plain launch (bare name, no arguments) doesn't need a [y/n]:
+# opening Notepad or Calculator changes nothing by itself. Asked for by the
+# user after the first voice run, where "open notepad" stopped to ask. The
+# rule stays narrow on purpose, because windows_launch_app is otherwise R2:
+# - bare name only ("notepad.exe"): a path, e.g. a look-alike
+#   C:\Downloads\notepad.exe, still confirms;
+# - no arguments: "cmd.exe /c ..." or an app told to open/run something
+#   still confirms;
+# - only names on this list (or SAFE_APPS in .env); everything else still
+#   confirms.
+DEFAULT_SAFE_APPS = frozenset({"notepad.exe", "calc.exe", "mspaint.exe", "snippingtool.exe", "explorer.exe"})
+
+
+def normalize_app_name(name: str) -> str:
+    name = name.strip().strip('"').lower()
+    return name if name.endswith(".exe") else name + ".exe"
+
+
 class WindowsToolProvider(ToolProvider):
     """Wraps a WindowsSession to satisfy the ToolProvider contract. Owns no
     logic of its own beyond dispatch/description glue -- all the actual
     pywinauto mechanics stay in WindowsSession above, unchanged."""
 
-    def __init__(self, session: WindowsSession):
+    def __init__(self, session: WindowsSession, safe_apps: frozenset[str] = DEFAULT_SAFE_APPS):
         self.session = session
+        self.safe_apps = frozenset(normalize_app_name(a) for a in safe_apps)
 
     def get_tool_specs(self) -> list[ToolSpec]:
         return [
@@ -576,9 +595,16 @@ class WindowsToolProvider(ToolProvider):
         # windows_click_control's risk depends on its target (the resolved
         # control's own accessible text, the UIA-backed equivalent of a
         # button's visible label) -- windows_type_into_control and
-        # windows_launch_app/windows_close_window get their risk entirely
-        # from their static risk_level in WINDOWS_ACTION_SPECS, so this
-        # returns None for them (falls through to that static tier).
+        # windows_close_window gets its risk entirely from its static
+        # risk_level in WINDOWS_ACTION_SPECS. windows_launch_app does too,
+        # except a plain launch of a safe-listed app (DEFAULT_SAFE_APPS /
+        # SAFE_APPS), which is R0.
+        if name == "windows_launch_app":
+            path = str(args.get("path", ""))
+            is_bare_name = path.strip() and not re.search(r"[\\/:]", path)
+            if is_bare_name and not (args.get("args") or "").strip() and normalize_app_name(path) in self.safe_apps:
+                return "R0"  # a plain launch of a known harmless app -- see DEFAULT_SAFE_APPS
+            return None  # anything else keeps the static R2
         if name == "windows_click_control":
             window_title = args.get("window_title")
             index = args.get("index")

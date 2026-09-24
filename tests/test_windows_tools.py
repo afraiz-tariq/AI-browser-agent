@@ -131,7 +131,9 @@ def test_get_dynamic_risk_detects_a_windows_specific_keyword_not_in_browsers_lis
 def test_get_dynamic_risk_returns_none_for_non_click_actions():
     provider = WindowsToolProvider(WindowsSession())
     assert provider.get_dynamic_risk("windows_type_into_control", {"window_title": "x", "index": 0}) is None
-    assert provider.get_dynamic_risk("windows_launch_app", {"path": "notepad.exe"}) is None
+    # notepad.exe is on the default safe-app list (R0) since 2026-09-24; an
+    # app that isn't still gets no dynamic override -> its static R2.
+    assert provider.get_dynamic_risk("windows_launch_app", {"path": "powershell.exe"}) is None
     assert provider.get_dynamic_risk("windows_close_window", {"window_title": "x"}) is None
 
 
@@ -447,3 +449,36 @@ def test_launch_and_close_clear_the_listing_so_jev_never_picks_from_a_stale_wind
     assert session.last_listing == ("Calculator", [])  # closing a different window keeps it
     session.execute("windows_close_window", {"window_title": "Calculator"})
     assert session.last_listing is None
+
+
+# --- safe-app launches (asked for after the first voice run) ----------------
+
+@pytest.mark.parametrize("args", [
+    {"path": "notepad.exe"},
+    {"path": "notepad"},             # ".exe" added
+    {"path": "Calc.EXE", "args": ""},
+])
+def test_plain_launch_of_a_safe_app_does_not_confirm(args):
+    provider = WindowsToolProvider(WindowsSession())
+    assert provider.get_dynamic_risk("windows_launch_app", args) == "R0"
+    assert requires_confirmation("R0", _FakeConfig()) is False
+
+
+@pytest.mark.parametrize("args", [
+    {"path": "notepad.exe", "args": "C:\\secret.txt"},           # arguments -> still asks
+    {"path": "cmd.exe", "args": "/c del *"},                      # not on the list
+    {"path": "C:\\Users\\me\\Downloads\\notepad.exe"},            # a path, possibly a look-alike
+    {"path": "..\\notepad.exe"},
+    {"path": "powershell.exe"},
+])
+def test_any_other_launch_keeps_the_static_r2(args):
+    provider = WindowsToolProvider(WindowsSession())
+    assert provider.get_dynamic_risk("windows_launch_app", args) is None  # -> static R2, confirms by default
+
+
+def test_safe_app_list_is_configurable_and_can_be_emptied():
+    custom = WindowsToolProvider(WindowsSession(), safe_apps=frozenset({"winword"}))
+    assert custom.get_dynamic_risk("windows_launch_app", {"path": "winword.exe"}) == "R0"
+    assert custom.get_dynamic_risk("windows_launch_app", {"path": "notepad.exe"}) is None
+    none = WindowsToolProvider(WindowsSession(), safe_apps=frozenset())
+    assert none.get_dynamic_risk("windows_launch_app", {"path": "notepad.exe"}) is None
