@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 341 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 343 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -199,7 +199,7 @@ call for that window -- mirrors the browser arm's `observe()` ->
 - `windows_click_control(window_title, index)` -- **dynamic**: R2 if the
   target control's own text matches a sensitive-keyword list, R0 otherwise.
 - `windows_click_controls(window_title, indices)` -- several clicks in one step, in order (e.g. Calculator 3, +, 2, =); **dynamic** like a single click: R2 if any control in the sequence looks sensitive, else R0.
-- `windows_type_into_control(window_title, index, text)` -- R1.
+- `windows_type_into_control(window_title, index, text)` -- R1. Reports the text read back from the control (never for password boxes) and the window's new title if typing renamed it (e.g. `*hello world - Notepad`).
 - `windows_read_control_text(window_title, index)` -- R0.
 - `windows_close_window(window_title)` -- R2.
 

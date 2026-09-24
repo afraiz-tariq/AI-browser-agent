@@ -526,3 +526,33 @@ def test_click_controls_is_risky_if_any_control_in_the_sequence_is():
     assert provider.get_dynamic_risk("windows_click_controls", {"window_title": "App", "indices": [0, 1]}) == "R2"
     desc = provider.describe_for_confirmation("windows_click_controls", {"window_title": "App", "indices": [0, 1]})
     assert "'Next'" in desc and "'Delete everything'" in desc
+
+
+def test_typing_reports_the_read_back_text_and_a_renamed_window(monkeypatch):
+    # User's PC: typing renamed "Untitled - Notepad" to "*hello world -
+    # Notepad"; the model then wasted two steps re-finding the window.
+    monkeypatch.setattr("windows_tools.time.sleep", lambda *a, **k: None)
+    session = WindowsSession()
+    doc = MagicMock()
+    doc.window_text.return_value = "hello world"
+    doc.top_level_parent.return_value.window_text.return_value = "*hello world - Notepad"
+    doc.element_info.element.CurrentIsPassword = False
+    session._last_controls["Untitled - Notepad"] = [doc]
+    session.last_listing = ("Untitled - Notepad", [{"i": 0, "type": "Document", "text": "", "password": False}])
+
+    result = session.execute("windows_type_into_control",
+                             {"window_title": "Untitled - Notepad", "index": 0, "text": "hello world"})
+
+    assert "title is now '*hello world - Notepad'" in result
+    assert "Read back from the control: 'hello world'" in result
+    assert session._last_controls["*hello world - Notepad"] == [doc]  # the next call with the new title works
+    assert session.last_listing[0] == "*hello world - Notepad"
+
+
+def test_typing_into_a_password_box_never_reads_it_back(monkeypatch):
+    monkeypatch.setattr("windows_tools.time.sleep", lambda *a, **k: None)
+    session = WindowsSession()
+    box = _password_ctrl("s3cret-SECRET")
+    session._last_controls["Sign in"] = [box]
+    result = session.execute("windows_type_into_control", {"window_title": "Sign in", "index": 0, "text": "x"})
+    assert "SECRET" not in result and "Read back" not in result

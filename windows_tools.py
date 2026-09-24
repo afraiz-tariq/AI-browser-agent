@@ -538,7 +538,35 @@ class WindowsSession:
             # (e.g. genuinely not focusable) but does support UIA's Value
             # pattern directly.
             ctrl.set_edit_text(text)
-        return f"Typed {text!r} into control #{index} in '{window_title}'."
+        return self._report_after_typing(window_title, index, ctrl, text)
+
+    def _report_after_typing(self, window_title: str, index: int, ctrl, text: str) -> str:
+        """Say what the control now holds and whether the window's title
+        changed. Found on the user's PC: typing into Notepad renamed the
+        window from 'Untitled - Notepad' to '*hello world - Notepad', so the
+        model's next call with the old title failed and it spent two extra
+        steps (list_windows, list_controls) re-finding the window just to
+        verify. The controls stay valid under the new title, so they're
+        re-keyed to it here."""
+        note = f"Typed {text!r} into control #{index} in '{window_title}'."
+        try:
+            title_now = ctrl.top_level_parent().window_text()
+        except Exception:
+            title_now = None
+        if isinstance(title_now, str) and title_now and title_now != window_title:
+            self._last_controls[title_now] = self._last_controls.get(window_title, [])
+            if self.last_listing and self.last_listing[0] == window_title:
+                self.last_listing = (title_now, self.last_listing[1])
+            note += (f" The window's title is now '{title_now}': use that exact title from here on "
+                     "(the same control indices still work).")
+        if not _is_password_control(ctrl):
+            try:
+                content = ctrl.window_text()
+            except Exception:
+                content = None
+            if isinstance(content, str):
+                note += f" Read back from the control: {' '.join(content.split())[:200]!r}."
+        return note
 
     def _do_windows_read_control_text(self, args: dict) -> str:
         window_title = args["window_title"]

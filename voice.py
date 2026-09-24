@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import warnings
 import queue
 import re
 import sys
@@ -370,6 +371,9 @@ def main() -> None:
     # The speech-model download's symlink warning is harmless on Windows (it
     # just uses a bit more disk); keep the startup output readable.
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+    # pywinauto notes it switched COM to single-threaded mode after the audio
+    # libraries loaded first; it works either way, so don't show it every run.
+    warnings.filterwarnings("ignore", message="Revert to STA COM threading mode")
 
     try:
         if args.keys:

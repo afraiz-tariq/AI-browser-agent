@@ -14,6 +14,14 @@ full commit message.
 
 ## 2026-09-24
 
+- Re-run on the user's PC after the bug-13 fixes: "open notepad and write
+  hello world" now really types and verifies; "sum 3 plus 2" took 5 steps
+  (one `windows_click_controls` for 3, +, 2, =) instead of 16 and answered
+  "3 plus 2 is 5." Follow-up: `windows_type_into_control` now reports the
+  read-back text and a renamed window title (typing renamed "Untitled -
+  Notepad" to "*hello world - Notepad", costing two extra steps to re-find
+  it); pywinauto's harmless STA COM warning is silenced in voice.py.
+
 - Fixes from the first voice runs (ARCHITECTURE_DECISIONS.md §1, bug 13):
   the model must now report only what this task itself did (Notepad's
   restored "Hello World" tab had been claimed as done); new
