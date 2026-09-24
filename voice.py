@@ -255,17 +255,22 @@ def main() -> None:
     # just uses a bit more disk); keep the startup output readable.
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-    if args.keys:
-        key_test()
-        return
+    try:
+        if args.keys:
+            key_test()
+            return
+        from config import load_config
 
-    from agent import run_task
-    from config import load_config
-
-    config = load_config()
-    if args.mic_test:
-        mic_test(config)
-        return
+        config = load_config()
+        if args.mic_test:
+            mic_test(config)
+            return
+        from agent import run_task
+    except ModuleNotFoundError as e:
+        print(f"Missing package '{e.name}'. Is the project's environment active? Your prompt should start with "
+              "(.venv) -- if not, run: .venv\\Scripts\\activate\n"
+              "Voice also needs: pip install faster-whisper sounddevice pynput pyttsx3")
+        sys.exit(1)
 
     problems = config.validate()
     if problems:
