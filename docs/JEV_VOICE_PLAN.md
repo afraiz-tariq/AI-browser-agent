@@ -130,7 +130,8 @@ Each phase ends with `pytest tests/ -q` green and, where marked, a real-run chec
 - Escalates to Claude on: no page or no elements; a login-looking page; DONE (Claude checks and writes the summary); OTHER; confidence below `JEV_MIN_CONFIDENCE`; an invalid answer; or TypeSafe being unreachable.
 - Deviation from the plan above: TYPE_TEXT uses only spans of the task (Rocky's select-not-generate) and never calls a Claude writer. If no span fits, the whole step goes to Claude. That's simpler, and the writer can be added later if evals show many type escalations.
 - Found and fixed along the way: `observe()` gave wrapped checkboxes an empty label.
-- Next: run `evals/run_evals.py` twice on the user's PC (`DECIDER=claude`, then `DECIDER=hybrid`) with the two new click-heavy tasks included, and compare.
+- **Measured live 2026-09-24 (user's PC, one run each):** hybrid passed 11/11 against Claude-only's 10/11. Jev's steps took a median 272 ms against about 2.2 s for Claude's. Decision wait fell 29% and total time 18%; click-heavy tasks were 38% faster (wizard) or passed where Claude-only failed (settings). Jev's cost was negligible (about $0.0007). Details in `evals/README.md`. The Phase 5 bar ("no worse success rate, clearly faster") is met on this small suite, but it's one run.
+- Follow-ups seen in the traces: warm the Jev connection (the first call per task is about 0.6–0.75 s); skip the Jev call when it can only answer DONE; let Jev scroll pages that have no elements; and find out why Claude-only oscillated on the settings page (needs that run's `logs/*.log`).
 
 ### Phase 2: writer, DONE check, safety adoptions
 - `writer.py`: span-first, then Claude (Haiku by default) with a strict JSON reply: one `text` key, 1–200 characters, no control characters. Never fills fields labelled password/PIN/card/CVV/SSN/token.

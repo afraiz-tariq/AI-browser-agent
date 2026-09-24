@@ -106,6 +106,32 @@ per-step wait. Cost is already small, so the case for a faster decider (Jev,
 see `docs/JEV_VOICE_PLAN.md`) is speed, not money: e.g. the 10-step Calculator
 task spent ~20 of its 22.5 s waiting on decisions.
 
+## Claude vs hybrid (Jev), 2026-09-24
+
+Same PC, same model (claude-sonnet-5), same 11 tasks, including the two new
+click-heavy ones. Raw files: `results/2026-09-24-claude-sonnet-5-run2.json`
+and `results/2026-09-24-hybrid-jev-sonnet-5.json`.
+
+| | `DECIDER=claude` | `DECIDER=hybrid` |
+|---|---|---|
+| Tasks passed | 10 / 11 (settings toggles failed: oscillated) | **11 / 11** |
+| Total task time | 169 s | **138 s** (-18%) |
+| Time waiting on decisions | 123 s | **87 s** (-29%) |
+| Steps decided by Jev | - | 11 (median **272 ms**) |
+| Steps decided by Claude | 54 (median ~2,220 ms) | 36 (median 2,264 ms) |
+| Trip wizard (mostly clicks) | 17.9 s | **11.1 s** (-38%) |
+| Settings toggles (mostly clicks) | failed after 37.4 s | **passed in 12.3 s** |
+| Cost | ~$0.22 | ~$0.14 Claude + ~$0.0007 Jev |
+
+Jev decides fast on clicks and typing, and everything that needs text
+(URLs, Excel, final answers) or a desktop app still goes to Claude, so the
+Excel and Windows tasks are unchanged. Seen in the traces, and worth fixing
+next: the first Jev call of each task is slower (~0.6-0.75 s, likely
+connection setup); a Jev call that answers DONE/OTHER adds ~0.3-0.7 s before
+Claude runs anyway; and pages with no clickable elements (the long-page
+task) skip Jev entirely, even for plain scrolling. One run each, so treat
+single-task differences as indicative, not settled.
+
 ## Page-reading speed (free, offline)
 
 ```

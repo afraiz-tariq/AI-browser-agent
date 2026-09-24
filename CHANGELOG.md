@@ -14,6 +14,11 @@ full commit message.
 
 ## 2026-09-24
 
+- First live claude-vs-hybrid comparison (Sonnet 5, 11 tasks, user's PC):
+  hybrid 11/11 vs 10/11, total time -18%, decision wait -29%, Jev steps
+  median 272 ms vs ~2.2 s for Claude, Jev cost ~$0.0007. See
+  `evals/README.md`.
+
 - Added the optional TypeSafe Jev decider (`jev.py`, `DECIDER=hybrid`, off by
   default): Jev picks browser click / type / scroll steps from the page's own
   elements in one request; Claude decides everything else and any step Jev
