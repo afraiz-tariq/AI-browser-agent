@@ -14,6 +14,10 @@ full commit message.
 
 ## 2026-09-24
 
+- DeepSeek measured (2026-09-25, `deepseek-flash`, hybrid): 11/11 evals
+  passed, 81 s vs Sonnet's 101 s, ~$0.012 vs ~$0.114 for the run. See
+  `evals/README.md`.
+
 - Corrected the documented DeepSeek model name to `deepseek-flash` (the API
   rejected `deepseek-v4.1-flash`, listing `deepseek-flash`, `deepseek-v4-pro`).
   An unknown model name now gets its own plain explanation and stops the

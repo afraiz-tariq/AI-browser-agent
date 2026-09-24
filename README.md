@@ -665,7 +665,7 @@ At September 2026 list prices that's roughly, per step:
 | `anthropic` / `claude-haiku-4-5` | ~$0.0021 | 50% (but failed 2/9 evals and took more steps) |
 | `openai` / `gpt-5-mini` | ~$0.0006 + its thinking tokens | ~15-30% |
 | `gemini` / `gemini-3.1-flash-lite-preview` | ~$0.0006 | ~13% |
-| `deepseek` / `deepseek-flash` | ~$0.0005 (half off-peak) | ~6-11% |
+| `deepseek` / `deepseek-flash` | ~$0.0005 (half off-peak) | ~6-11%; **measured 2026-09-25: 11/11 evals, ~90% cheaper and 20% faster than Sonnet** |
 
 Cheaper models tend to take more steps or fail more, so compare them on the
 eval suite before switching: `python evals/run_evals.py --save

@@ -157,6 +157,25 @@ Jev call on each new screen is still ~0.6-0.77 s even with the shared
 connection, so it isn't connection setup as first guessed; it looks like
 TypeSafe's side (a new screen's state vs. an unchanged prefix).
 
+## DeepSeek vs Sonnet (both hybrid with Jev), 2026-09-25
+
+Same 11 tasks, same PC, `DECIDER=hybrid`. Raw: `results/2026-09-25-hybrid-deepseek-flash.json`
+vs `results/2026-09-24-hybrid-jev-sonnet-5-run2.json`.
+
+| | `anthropic` / `claude-sonnet-5` | `deepseek` / `deepseek-flash` |
+|---|---|---|
+| Tasks passed | 11 / 11 | **11 / 11** |
+| All 11 tasks | 101 s | **81 s** |
+| LLM step (median) | 2.34 s | **1.07 s** |
+| Steps taken | 47 | 55 (a few extra checks, e.g. Calculator 12 vs 9) |
+| Cost (LLM + Jev) | ~$0.114 | **~$0.012** (~90% less; peak-hour prices, off-peak is half) |
+
+Costs are computed from the token counts at list prices; the APIs don't
+return dollar amounts. One run each. DeepSeek took a few more
+verification steps but finished faster, because each of its steps is
+quicker. Privacy trade-off: DeepSeek's servers are in China and receive the
+task and page/window text on the steps it decides.
+
 ## Page-reading speed (free, offline)
 
 ```
