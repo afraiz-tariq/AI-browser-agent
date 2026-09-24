@@ -177,6 +177,8 @@ Each phase ends with `pytest tests/ -q` green and, where marked, a real-run chec
 - **Voice on Windows is unproven in every reference project.** Rocky and typesafe-computer-use both label their Windows paths untested, which is why Phase 3 requires a real spoken session before it counts as done.
 - **Cost of mistakes at speed.** A fast wrong click is still wrong. The freshness guard, confidence floor and risk tiers are what make speed safe, so they land before or with the Jev decider, not after.
 
+- **Newest Claude models reject our forced tool call.** `llm.py` sends `tool_choice: {"type": "any"}` (the fix for bug 2: `finish` always has a summary). `claude-opus-5-5` and `claude-fable-5-1` return a 400 for forced tool choice. The default `claude-sonnet-5` (and Opus 5, Haiku 4.5) is fine. Before anyone sets `LLM_MODEL` to one of those two, switch them to `tool_choice: auto` + `strict: true` tools + the existing "you must call a tool" prompt line, and re-run the evals to confirm bug 2 stays fixed.
+
 ## 8. Needed from you before Phase 1
 
 1. A TypeSafe API key (console.typesafe.ai). Phase 0 needs only the existing Claude key.
