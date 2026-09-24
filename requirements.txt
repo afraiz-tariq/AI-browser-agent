@@ -11,6 +11,7 @@ discord.py>=2.7,<3.0
 # faster-whisper
 # sounddevice
 # pyttsx3
+# pystray  (the icon by the clock; with pillow below)
 # Optional: only needed if you set LLM_PROVIDER=openai, deepseek, gemini or openrouter in .env
 # openai>=1.40,<2.0
 # Optional: only needed if you turn on ANY of the ENABLE_MCP_* flags in
@@ -31,3 +32,4 @@ discord.py>=2.7,<3.0
 # the same reliability class as Playwright reading the DOM, not blind
 # pixel/coordinate clicking.
 # pywinauto
+# pillow  (only for windows_screenshot / the "take a screenshot" voice command)

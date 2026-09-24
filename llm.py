@@ -80,6 +80,8 @@ Rules:
 - To press several controls of one window in a known order (e.g.
   Calculator keys 3, +, 2, =), use windows_click_controls once rather than
   one click per step.
+- For a screenshot, use windows_screenshot -- never the Snipping Tool: its
+  capture overlay waits for a mouse drag these tools can't perform.
 - If a webpage shows a login form, a "sign in to continue" wall, a CAPTCHA,
   or 2FA/MFA prompt, call login_required immediately. Never try to guess
   credentials, solve a CAPTCHA, or bypass MFA.

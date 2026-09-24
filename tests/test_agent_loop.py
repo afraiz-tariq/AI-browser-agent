@@ -218,7 +218,24 @@ def test_oscillating_between_two_different_actions_is_detected_as_stuck(test_con
     outcome = run_task("Oscillate forever.", test_config, dry_run=True, llm_client=llm_client)
 
     assert outcome["success"] is False
-    assert "oscillating between two actions" in outcome["result"]
+    assert "oscillating between the same few actions" in outcome["result"]
+
+
+def test_a_three_action_cycle_run_twice_is_detected_as_stuck(test_config, fixtures_server):
+    # The voice screenshot run: click, list, list, click, list, list ... until
+    # MAX_STEPS. Neither the exact-repeat nor the A-B-A-B guard sees it.
+    cycle = [
+        _reply("Going to the page.", "goto", {"url": f"{fixtures_server}/index.html"}),
+        _reply("Scrolling down.", "scroll", {"direction": "down"}),
+        _reply("Scrolling up.", "scroll", {"direction": "up"}),
+    ]
+    mock = MockProvider(cycle * 2 + [_reply("Done.", "finish", {"summary": "never reached"})])
+
+    outcome = run_task("Go round in circles.", test_config, dry_run=True, llm_client=LLMClient(mock))
+
+    assert outcome["success"] is False
+    assert "oscillating between the same few actions" in outcome["result"]
+    assert len(mock.calls) == 6
 
 
 def test_repeated_no_effect_actions_get_a_hint_then_eventually_abort(test_config, fixtures_server, capsys):
@@ -338,3 +355,19 @@ def test_an_unknown_model_name_is_explained():
         "model names are deepseek-flash, deepseek-v4-pro, but you passed deepseek-v4.1-flash.'}}"))
     assert "doesn't know the model name" in msg.splitlines()[0]
     assert "deepseek-flash" in msg  # the accepted names stay visible
+
+
+def test_on_step_is_told_each_step_and_its_errors_are_ignored(test_config, fixtures_server):
+    seen = []
+
+    def on_step(step, thought, action):
+        seen.append((step, action))
+        raise RuntimeError("the window broke")  # must not break the task
+
+    mock = MockProvider([
+        _reply("Opening.", "goto", {"url": f"{fixtures_server}/index.html"}),
+        _reply("Done.", "finish", {"summary": "The mock search engine page has a search box."}),
+    ])
+    outcome = run_task("Open it.", test_config, dry_run=True, llm_client=LLMClient(mock), on_step=on_step)
+    assert outcome["success"] is True
+    assert seen == [(1, "goto"), (2, "finish")]

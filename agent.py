@@ -101,6 +101,7 @@ def run_task(
     task: str, config, dry_run: bool = False, llm_client: LLMClient | None = None,
     confirm_callback: Callable[[str], bool] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    on_step: Callable[[int, str, str], None] | None = None,
 ) -> dict:
     """
     Runs one task end-to-end and returns a result dict. Also writes a log
@@ -120,6 +121,10 @@ def run_task(
     before an action runs; when it returns True the task stops cleanly with
     a "stopped by you" failure. voice.py wires its stop key to it -- the
     spoken equivalent of Ctrl+C that doesn't kill the whole program.
+
+    `on_step(step, thought, action)`, if given, is told about each decided
+    step before it runs -- display only (voice.py's window shows "Step 3:
+    ..."); anything it raises is ignored.
     """
     logger = TaskLogger(Path(__file__).parent / "logs", task)
     user_confirm = confirm_callback or ask_confirmation
@@ -326,6 +331,11 @@ def run_task(
             logger.action(step, thought, action, args, current_url)
             print(f"\nStep {step}: {thought}")
             print(f"  -> {action} {args}")
+            if on_step is not None:
+                try:
+                    on_step(step, thought, action)  # e.g. voice.py's window; display only
+                except Exception:  # noqa: BLE001 -- a display glitch must never break the task
+                    pass
 
             # --- stuck-loop / cost guard: bail out if the model repeats the
             # exact same action three times in a row, or oscillates between
@@ -343,11 +353,19 @@ def run_task(
                 len(history) >= 4 and recent4[0] == recent4[2] and recent4[1] == recent4[3]
                 and recent4[0] != recent4[1]
             )
+            # A three-action cycle run twice (A, B, C, A, B, C) is the same
+            # kind of stuck: a voice "take a screenshot" clicked the Snipping
+            # Tool overlay, listed windows, listed controls, and went round
+            # again until MAX_STEPS.
+            recent6 = [h.split(" -> thought:")[0] for h in history[-6:]]
+            oscillating = oscillating or (
+                len(history) >= 6 and recent6[:3] == recent6[3:] and len(set(recent6[:3])) == 3
+            )
             if action != "finish" and (exact_repeat or oscillating):
                 raise TaskCannotBeCompleted(
                     explain(
                         "The agent repeated the same action three times without progress." if exact_repeat
-                        else "The agent is oscillating between two actions without progress.",
+                        else "The agent is oscillating between the same few actions without progress.",
                         "The AI model may be stuck (e.g. the page didn't change as expected, "
                         "or the element index it picked doesn't do what it thinks).",
                         "Try rephrasing the task to be more specific, or increase MAX_STEPS "
@@ -601,8 +619,9 @@ def _dispatch_action(
         if not confirm(f"Ready to {desc}. Continue?"):
             raise TaskCannotBeCompleted(
                 explain(
-                    "User declined a sensitive action.",
-                    f"{desc[0].upper()}{desc[1:]} was flagged for confirmation and declined.",
+                    "A sensitive action was not confirmed, so it was not done.",
+                    f"{desc[0].upper()}{desc[1:]} was flagged for confirmation and declined "
+                    "(the answer was no, or no clear yes was heard).",
                     "Re-run the task and confirm the action if it was actually intended.",
                 )
             )

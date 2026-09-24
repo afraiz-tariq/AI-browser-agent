@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 363 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 418 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -201,6 +201,7 @@ call for that window -- mirrors the browser arm's `observe()` ->
 - `windows_click_controls(window_title, indices)` -- several clicks in one step, in order (e.g. Calculator 3, +, 2, =); **dynamic** like a single click: R2 if any control in the sequence looks sensitive, else R0.
 - `windows_type_into_control(window_title, index, text)` -- R1. Reports the text read back from the control (never for password boxes) and the window's new title if typing renamed it (e.g. `*hello world - Notepad`).
 - `windows_read_control_text(window_title, index)` -- R0.
+- `windows_screenshot(window_title?)` -- R1. Saves the whole screen (or one window) as a new PNG in `output/screenshots/`; never overwrites, never sent anywhere. Needs `pip install pillow`. The model is told not to use the Snipping Tool: its capture overlay waits for a mouse drag this arm can't do.
 - `windows_close_window(window_title)` -- R2.
 
 Confirmation policy mirrors the browser arm's exactly, not a separate
@@ -369,8 +370,8 @@ above) are off by default; nothing below is needed unless you turn one on.
   no extra pip package for either.
 
 **Optional: the Windows desktop automation arm.** Off by default
-(`ENABLE_WINDOWS_AUTOMATION=false`); Windows-only. `pip install pywinauto`
-to turn it on -- see **Windows desktop automation arm** above.
+(`ENABLE_WINDOWS_AUTOMATION=false`); Windows-only. `pip install pywinauto pillow`
+to turn it on (Pillow is only for screenshots) -- see **Windows desktop automation arm** above.
 
 ## Running
 
@@ -463,21 +464,59 @@ Windows arm (only works once `ENABLE_WINDOWS_AUTOMATION=true` -- see
 Control the agent by talking to it (Windows):
 
 ```
-pip install faster-whisper sounddevice pyttsx3
+pip install faster-whisper sounddevice pyttsx3 pystray pillow
 python voice.py
 ```
 
-- **Hold right Ctrl** (`VOICE_PTT_KEY`) while you say a task, e.g. "Open
-  Notepad and type hello world", and release it. The agent runs the task
-  exactly like `python agent.py` would, then **says the result** aloud.
+**No terminal needed:** double-click `start_voice.bat` in the project
+folder (it uses the project's own `.venv`, nothing to activate). It runs
+without a terminal window, as a **small floating window** in the
+bottom-right corner plus an **icon by the clock**:
+
+- The window shows what it heard, the step it's on ("Step 2: typing 'ABC'
+  into the search box"), and the result. Drag it anywhere; `–` hides it,
+  and tapping the talk key brings it back.
+- **Type instead of talking:** click the box at the bottom ("Type a task
+  and press Enter..."), type e.g. "open notepad and write hello", press
+  Enter. It runs exactly like a spoken task (quick commands included) and
+  asks the same confirmations. A new task is refused while one is still
+  running (F10 stops it). In the terminal (`python voice.py`) you can also
+  just type a task and press Enter.
+- Before a risky action it shows **Yes / No buttons**. Click one, or say
+  "yes"/"no" (or type it in the box) -- whichever comes first counts. If you say nothing, the
+  buttons stay up for 30 seconds, then it's a no. The agent can't click
+  them itself: it's paused, waiting for your answer, while they're up.
+- The icon's colour shows the state (grey ready, red listening, blue
+  working, amber asking). Right-click it: Show window, Pause microphone,
+  Open log (`output/voice.log`, what the terminal would have shown), Quit.
+- `VOICE_UI=false` goes back to the terminal only (run `python voice.py`).
+- Needs `pip install pystray pillow` for the icon; without them you still
+  get the window.
+
+To have it start by itself every time you log in to Windows, run once:
+
+```
+python voice.py --autostart on     # "off" undoes it
+```
+
+Only one copy runs at a time; starting a second one just says it's already
+running.
+
+- **Tap right Ctrl** (`VOICE_PTT_KEY`) and say a task, e.g. "Open Notepad
+  and type hello world". No need to hold the key: recording ends by itself
+  about a second after you stop talking (or tap again to send right away).
+  The agent runs the task exactly like `python agent.py` would, then
+  **says the result** aloud. Prefer holding? Set `VOICE_MODE=hold`.
 - **Press F10** (`VOICE_STOP_KEY`) to stop a running task before its next
-  action. Ctrl+C in the window quits.
+  action. Ctrl+C in the window (or closing it) quits.
 - **Confirmations are spoken.** Before a risky action the agent asks aloud
-  and listens for ~4 seconds. **Only a plain "yes" or "confirm"
-  continues**; silence, "no", "yes please", or anything it can't make out
-  declines, the same as typing `n`.
-- **Privacy:** the microphone records only while the key is held (and for
-  the few seconds after a confirmation question). Speech-to-text runs on
+  and waits up to 5 seconds for you to start answering (and asks once more
+  if it hears nothing); it stops listening as soon as you've finished.
+  **Only a plain "yes" or "confirm" continues**; silence, "no", "yes
+  please", or anything it can't make out declines, the same as typing `n`.
+- **Privacy:** the microphone records only after you tap the key, until you
+  stop speaking (or while it's held, in hold mode), and for the few seconds
+  after a confirmation question. Speech-to-text runs on
   your PC (faster-whisper); audio is never uploaded or saved. Only the
   transcribed sentence becomes the task text.
 - The first run downloads the speech model (`VOICE_WHISPER_MODEL`, default
@@ -486,7 +525,8 @@ python voice.py
 - **Quick commands run instantly** (well under a second, no full agent run):
   "open notepad" / "open calculator" (apps on `SAFE_APPS`), "go to youtube",
   "open example dot com", "search youtube for lofi beats", "volume up",
-  "mute", "pause", "next track". With `TYPESAFE_API_KEY` set, Jev also
+  "mute", "pause", "next track", "take a screenshot" (saved to
+  `output/screenshots/`). With `TYPESAFE_API_KEY` set, Jev also
   catches other phrasings ("fire up the calculator"), only when it's at
   least `QUICK_MIN_CONFIDENCE` sure. Anything longer ("open notepad and
   type hello"), unsure, or not on the lists runs through the full agent as
@@ -595,6 +635,8 @@ each other.
 | `MCP_FILESYSTEM_ROOT` | Required if `ENABLE_MCP_FILESYSTEM=true` -- the one local folder the agent may read from |
 | `MCP_STARTUP_TIMEOUT_S` | How long to wait for an MCP server to start before giving up; default `90` (an npx-launched server can be slow on a cold npm registry round-trip) |
 | `VOICE_PTT_KEY` | Voice: hold this key to talk (default `ctrl_r` = right Ctrl; also `f9`, `alt_gr`, `scroll_lock`, a letter... -- `python voice.py --keys` shows names) |
+| `VOICE_UI` | Voice: the floating window with Yes / No buttons and the icon by the clock (default `true`); `false` = terminal only |
+| `VOICE_MODE` | Voice: `tap` (default: tap the key and speak, recording ends when you stop talking) or `hold` (hold the key while speaking) |
 | `VOICE_STOP_KEY` | Voice: stops a running task before its next action (default `f10`) |
 | `VOICE_WHISPER_MODEL` | Voice: local speech-to-text model, `tiny.en` / `base.en` (default) / `small.en` |
 | `VOICE_LANGUAGE` | Voice: spoken language code, default `en` (use a multilingual model like `base` for others) |
@@ -624,7 +666,12 @@ models later -- nothing else in the code references a specific provider.
   ```
   Ready to click <button 'Submit'>. This looks like it may have side effects. Continue? [y/n]
   ```
-  Declining stops the task immediately with an explanation.
+  Declining stops the task immediately with an explanation. One exception:
+  a plain search (typing into a search box of a form that submits with GET,
+  like Google's, YouTube's or Wikipedia's) doesn't ask -- its result is just
+  a URL the agent could open anyway. It asks again if `CONFIRM_R1_ACTIONS=true`.
+  By voice, silence gets one "I didn't hear an answer" retry; only a plain
+  "yes" continues.
 - `excel_save` gets the same treatment -- it's the only Excel action that
   touches disk (reads and `excel_write_cell` only change the in-memory
   workbook), so it always asks before overwriting a real file:

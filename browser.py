@@ -18,7 +18,9 @@ a Phase 1 prototype.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from playwright.sync_api import Browser, BrowserContext, Page, TimeoutError as PWTimeout, sync_playwright
 
@@ -149,6 +151,48 @@ class Observation:
     total_text_length: int
 
 
+def turn_off_translate_offer(profile_dir: Path) -> None:
+    """Switch off Chrome's "Translate this page?" bubble in the agent's own
+    Chrome profile (a setting, like unticking it in Chrome). Playwright's
+    launch flags already disable it, yet a voice run on a Korean Google page
+    still showed it. The bubble is outside the page, so it never blocked the
+    agent, but a translated page would change text under it. Best effort:
+    a missing or unreadable settings file is left alone."""
+    prefs_path = profile_dir / "Default" / "Preferences"
+    try:
+        prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+        if prefs.get("translate", {}).get("enabled") is False:
+            return
+        prefs.setdefault("translate", {})["enabled"] = False
+        prefs_path.write_text(json.dumps(prefs), encoding="utf-8")
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+# See BrowserSession.is_search_submit(). Google's box is a <textarea
+# name="q"> in <form role="search" action="/search"> (GET); YouTube's is
+# name="search_query" in action="/results"; Wikipedia's is type="search".
+_SEARCH_SUBMIT_JS = r"""el => {
+  const form = el.form || el.closest('form');
+  if (!form || !['input', 'textarea'].includes(el.tagName.toLowerCase())) return false;
+  if ((form.getAttribute('method') || 'get').toLowerCase() !== 'get') return false;
+  if (form.querySelector('input[type=password]')) return false;
+  // Enter submits through the form's default (first) submit button, so only
+  // that button can switch the method to POST. A file field doesn't matter:
+  // GET never uploads file contents, and Google's form holds a hidden one
+  // for search-by-image.
+  const button = form.querySelector('button:not([type]), button[type=submit i], input[type=submit i], input[type=image i]');
+  if (button && (button.getAttribute('formmethod') || 'get').toLowerCase() !== 'get') return false;
+  const name = (el.getAttribute('name') || '').toLowerCase();
+  const action = (form.getAttribute('action') || '').toLowerCase();
+  return (el.getAttribute('type') || '').toLowerCase() === 'search'
+    || (el.getAttribute('role') || '').toLowerCase() === 'searchbox'
+    || !!el.closest('[role=search], search')
+    || /search|results/.test(action)
+    || ['q', 'query', 'search', 'search_query', 'keywords'].includes(name);
+}"""
+
+
 class BrowserSession:
     """Owns the Playwright/Chrome lifecycle for one agent run."""
 
@@ -182,6 +226,7 @@ class BrowserSession:
             launch_kwargs["channel"] = self.config.chrome_channel
 
         if self.config.use_persistent_profile:
+            turn_off_translate_offer(Path(self.config.chrome_user_data_dir))
             # A persistent profile means cookies/logins the *user* already
             # performed manually in this profile carry over between runs,
             # without the agent ever handling credentials itself.
@@ -380,6 +425,18 @@ class BrowserSession:
             return True
         return is_secret_label(attrs.get("aria"), attrs.get("placeholder"), attrs.get("name"), attrs.get("id"))
 
+    def is_search_submit(self, index: int) -> bool:
+        """Whether typing into this element and pressing Enter is just a
+        search: a search box in a form that submits with GET (so the result
+        is a plain URL, the same thing `goto` opens without asking), with no
+        password/file field and no button overriding the method to POST."""
+        if not (0 <= index < len(self._last_elements)):
+            return False
+        try:
+            return bool(self._last_elements[index].evaluate(_SEARCH_SUBMIT_JS))
+        except Exception:
+            return False  # can't tell -> not a search, so it keeps asking
+
     def is_sensitive(self, index: int) -> bool:
         summary = self.element_summary(index).lower()
         return any(keyword in summary for keyword in SENSITIVE_KEYWORDS)
@@ -517,7 +574,13 @@ class BrowserToolProvider(ToolProvider):
         elif name == "type" and args.get("submit"):
             # Confirmed whenever a form is actually being submitted,
             # regardless of whether the target element's own text looks
-            # sensitive -- matches the original behavior this replaces.
+            # sensitive -- except a plain search (is_search_submit(): a GET
+            # search form, whose result is just a URL `goto` could open
+            # without asking). That's R1, asked only with CONFIRM_R1_ACTIONS.
+            # Added after a voice "search Google for APC" stopped to ask.
+            index = args.get("index")
+            if index is not None and self.session.is_search_submit(int(index)):
+                return "R1"
             return "R2"
         return None
 

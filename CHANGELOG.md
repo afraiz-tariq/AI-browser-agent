@@ -14,6 +14,44 @@ full commit message.
 
 ## 2026-09-25
 
+- Type a task instead of saying it: a text box in the voice window (and
+  typing in the terminal) runs it through the same path as a spoken task,
+  confirmations included. Typing "yes"/"no" answers an open question. A
+  typed task is refused, not queued, while one is running.
+
+- Voice looks like an app now: `start_voice.bat` runs it without a
+  terminal, as a small floating window (what it heard, the current step,
+  the result) and an icon by the clock (state colour; Show window, Pause
+  microphone, Open log, Quit). Confirmations show Yes / No buttons next to
+  the spoken question -- a click or a spoken answer, whichever comes
+  first. `run_task()` gained an optional display-only `on_step` callback.
+  `VOICE_UI=false` keeps the terminal.
+
+- Less effort to use voice: tap right Ctrl and speak (recording ends about
+  a second after you stop talking; `VOICE_MODE=hold` keeps the old
+  hold-to-talk), spoken yes/no answers end as soon as you've said them,
+  `start_voice.bat` runs it without a terminal or activating `.venv`, and
+  `python voice.py --autostart on` starts it minimized at every login. A
+  second copy refuses to start, so a task never runs twice.
+
+- A voice "search Google for APC" stopped at "Ready to type into
+  <textarea> '검색' and submit" and then read silence as a "no". A plain
+  search (a GET search form) is now R1, so it no longer asks; the voice
+  confirm asks once more on silence (listening 5 s, not 4) instead of
+  declining, and the failure message no longer claims "User declined".
+  Chrome's translate pop-up is turned off (in the agent's own Chrome
+  profile). Follow-up the same day: Google still asked, most likely because
+  its search form holds a hidden file field (search by image), which the
+  first check wrongly treated as "not just a search"; fixed.
+
+- "Take a screenshot" works now. A voice run drove the Snipping Tool and
+  spent all 20 steps on its capture overlay, which waits for a mouse drag
+  the Windows arm can't do. New `windows_screenshot` tool (R1: a new PNG in
+  `output/screenshots/`), a matching voice quick command, and a prompt rule
+  steering the model away from the Snipping Tool. The stuck-loop guard now
+  also stops a three-action cycle repeated twice (that run's
+  click / list windows / list controls loop).
+
 - DeepSeek (`deepseek-flash`) is now the default in `.env.example`, by the
   user's choice after it matched Sonnet on the evals at ~10% of the cost.
   Anthropic stays supported (ARCHITECTURE_DECISIONS.md §2a).

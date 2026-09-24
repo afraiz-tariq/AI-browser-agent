@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Search forms</title></head>
+<body>
+  <form role="search" action="/search" method="GET">
+    <textarea name="q" aria-label="검색"></textarea>
+    <div hidden><input type="file" name="encoded_image" /></div>
+    <input type="submit" value="Google 검색" />
+  </form>
+  <form action="/w/index.php"><input type="search" name="search" aria-label="Wiki search" /></form>
+  <form method="post" action="/search"><input name="q" aria-label="Post search" /></form>
+  <form action="/comment"><textarea name="comment" aria-label="Comment box"></textarea></form>
+  <form action="/search"><input name="q" aria-label="Override search" /><button formmethod="post">Go</button></form>
+  <form action="/search"><input name="q" aria-label="Search with password" /><input type="password" aria-label="Pin" /></form>
+  <form action="/search"><input name="q" aria-label="Second-button post" /><button>Go</button><button formmethod="post">Save</button></form>
+  <input name="q" aria-label="Loose box" />
+</body>
+</html>

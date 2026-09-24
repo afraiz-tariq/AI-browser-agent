@@ -14,12 +14,13 @@ from voice import VoiceAssistant
 SAFE = frozenset({"notepad.exe", "calc.exe", "mspaint.exe", "snippingtool.exe", "explorer.exe"})
 
 
-def _quick(jev=None, safe=SAFE, is_safe_launch=None):
+def _quick(jev=None, safe=SAFE, is_safe_launch=None, screenshots=True):
     done = []
     quick = QuickCommands(
         safe, launch_app=lambda exe: done.append(("launch", exe)), open_url=lambda url: done.append(("url", url)),
         press_media_key=lambda key: done.append(("key", key)), jev=jev, is_safe_launch=is_safe_launch,
         log=lambda m: None,
+        take_screenshot=(lambda: done.append(("screenshot",)) or "saved") if screenshots else None,
     )
     return quick, done
 
@@ -42,6 +43,29 @@ def test_common_phrases_run_instantly_without_jev_or_claude(said, expected):
     assert done[0] == expected
 
 
+@pytest.mark.parametrize("said", [
+    "Take a screenshot.", "take screenshots", "screenshot", "capture the screen", "print screen",
+    "grab a screenshot please",
+])
+def test_a_screenshot_is_taken_directly_not_through_the_snipping_tool(said):
+    quick, done = _quick()
+    assert quick.try_handle(said) == "Screenshot saved."
+    assert done == [("screenshot",)]
+
+
+def test_without_a_screenshot_action_the_full_agent_handles_it():
+    # e.g. no Windows arm, or CONFIRM_R1_ACTIONS=true (then the agent asks first)
+    quick, done = _quick(screenshots=False)
+    assert quick.try_handle("take a screenshot") is None
+    assert done == []
+
+
+def test_jev_screenshot_paraphrase():
+    quick, done = _quick(jev=_jev({"kind": "screenshot"}))
+    assert quick.try_handle("snap what's on my monitor") == "Screenshot saved."
+    assert done == [("screenshot",)]
+
+
 def test_volume_moves_a_noticeable_step():
     quick, done = _quick()
     assert quick.try_handle("volume up") == "Volume up."
@@ -54,6 +78,7 @@ def test_volume_moves_a_noticeable_step():
     "open C:\\\\tools\\\\thing.exe",
     "look up the weather in Paris",            # wants an answer read back, not a results page
     "stop",                                    # F10 stops tasks; "stop" must not toggle music
+    "take a screenshot and email it to bob",   # more than one step
     "what's on my calendar today",
     "",
 ])
@@ -120,7 +145,7 @@ def test_jev_down_means_the_full_agent_runs():
 def test_voice_uses_the_quick_path_and_skips_the_agent():
     quick, done = _quick()
     said, runs = [], []
-    assistant = VoiceAssistant(None, lambda a: "Open notepad.", said.append, lambda s: None,
+    assistant = VoiceAssistant(None, lambda a: "Open notepad.", said.append, lambda s, abort=None: None,
                                lambda *a, **k: runs.append(a), log=lambda m: None, quick=quick)
     outcome = assistant.handle_audio("audio")
     assert outcome == {"success": True, "result": "Opening notepad.", "quick": True}
@@ -134,7 +159,7 @@ def test_voice_falls_back_to_the_agent_if_the_shortcut_errors():
     quick = QuickCommands(SAFE, launch_app=broken, open_url=lambda u: None, press_media_key=lambda k: None,
                           log=lambda m: None)
     runs = []
-    assistant = VoiceAssistant(None, lambda a: "open notepad", lambda t: None, lambda s: None,
+    assistant = VoiceAssistant(None, lambda a: "open notepad", lambda t: None, lambda s, abort=None: None,
                                lambda text, config, **k: runs.append(text) or {"success": True, "result": "ok"},
                                log=lambda m: None, quick=quick)
     assistant.handle_audio("audio")
