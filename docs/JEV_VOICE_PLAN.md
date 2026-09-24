@@ -122,6 +122,7 @@ Each phase ends with `pytest tests/ -q` green and, where marked, a real-run chec
 ### Phase 2: writer, DONE check, safety adoptions
 - `writer.py`: span-first, then Claude (Haiku by default) with a strict JSON reply: one `text` key, 1–200 characters, no control characters. Never fills fields labelled password/PIN/card/CVV/SSN/token.
 - Claude `DONE` check writes the `finish` summary, keeping bug 2's guarantee (a summary with real content).
+- *(Done ahead of this plan, 2026-09-24: secret field values are masked before reaching any model, in both arms. See `secret_fields.py` and ARCHITECTURE_DECISIONS §1 bug 12. A Jev decider must build its element table from the same masked `ElementInfo`.)*
 - Freshness guard before browser click/type; refuse to type into `type=password` inputs and UIA `IsPassword` controls; add Rocky's extra destructive words to `SENSITIVE_KEYWORDS`.
 - **Exit:** tests for each refusal; a real run of the multi-field form fixture with the confirmation still firing.
 

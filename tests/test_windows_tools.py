@@ -358,3 +358,50 @@ def test_close_window_clears_its_stored_controls(monkeypatch):
     fake_window.close.assert_called_once()
     assert "Untitled - Notepad" not in session._last_controls
     assert "Untitled - Notepad" in result
+
+
+def _password_ctrl(text="hunter2-SECRET"):
+    ctrl = MagicMock()
+    ctrl.friendly_class_name.return_value = "Edit"
+    ctrl.window_text.return_value = text
+    ctrl.element_info.element.CurrentIsPassword = True
+    return ctrl
+
+
+def test_list_controls_masks_a_password_control(monkeypatch):
+    import pywinauto.application
+
+    fake_window = MagicMock()
+    fake_window.descendants.return_value = [_password_ctrl()]
+    fake_app = MagicMock()
+    fake_app.connect.return_value = fake_app
+    fake_app.window.return_value = fake_window
+    monkeypatch.setattr(pywinauto.application, "Application", MagicMock(return_value=fake_app))
+
+    result = WindowsSession().execute("windows_list_controls", {"window_title": "Sign in"})
+
+    assert "SECRET" not in result
+    assert "[0] Edit (password field)" in result
+
+
+def test_read_control_text_refuses_a_password_control():
+    session = WindowsSession()
+    ctrl = _password_ctrl()
+    session._last_controls["Sign in"] = [ctrl]
+
+    result = session.execute("windows_read_control_text", {"window_title": "Sign in", "index": 0})
+
+    assert "SECRET" not in result
+    assert "password field" in result
+    ctrl.window_text.assert_not_called()
+
+
+def test_is_password_control_ignores_an_unreadable_or_non_bool_flag():
+    # A plain MagicMock's CurrentIsPassword is itself a (truthy) MagicMock --
+    # only a real True may count, or every mocked/older control would be
+    # treated as a password field and hidden from the model.
+    assert windows_tools._is_password_control(MagicMock()) is False
+    broken = MagicMock()
+    type(broken).element_info = property(lambda self: (_ for _ in ()).throw(RuntimeError("no UIA")))
+    assert windows_tools._is_password_control(broken) is False
+    assert windows_tools._is_password_control(_password_ctrl()) is True

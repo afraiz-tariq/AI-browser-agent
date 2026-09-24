@@ -14,6 +14,13 @@ full commit message.
 
 ## 2026-09-24
 
+- Fixed secret field values being able to reach the LLM: a pre-filled
+  password input with no label had its password used as its label in the
+  prompt. Both arms now mask password/PIN/card/token fields (browser:
+  `type=password`, autocomplete tokens, secret-sounding labels; Windows: UIA
+  `IsPassword`) via the new shared `secret_fields.py`. See
+  ARCHITECTURE_DECISIONS.md §1, bug 12.
+
 - Added `docs/JEV_VOICE_PLAN.md`: a phased, additive plan for TypeSafe Jev decisions (with Claude escalation) and Windows voice control, based on a study of Rocky, jev-ultrafast, jev-voice and typesafe-computer-use. A proposal only; no code changed.
 
 ## 2026-09-09

@@ -287,3 +287,74 @@ def test_navigating_to_a_new_page_resets_the_text_reading_position(test_config, 
         assert "SEGMENT-00" in fresh.visible_text
     finally:
         session.stop()
+
+
+def test_secret_field_values_never_reach_the_model_prompt(test_config, fixtures_server):
+    # The fixture pre-fills a password, an API-token field and a card-number
+    # field, each value containing "SECRET". None of them may appear anywhere
+    # the model or a log could see: the rendered prompt, any element's state,
+    # or element_summary() (used in confirmation prompts and logs).
+    from llm import LLMClient, MockProvider
+
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/secret_fields.html")
+        obs = session.observe()
+        mock = MockProvider([{"action": "wait", "args": {}}])
+        LLMClient(mock).decide_next_action("Update my account.", [], obs)
+        _, user_prompt = mock.calls[0]
+
+        assert "SECRET" not in user_prompt
+        assert "SECRET" not in obs.state_fingerprint
+        for el in obs.elements:
+            assert "SECRET" not in el.text
+            assert "SECRET" not in el.state
+            assert "SECRET" not in session.element_summary(el.index)
+    finally:
+        session.stop()
+
+
+def test_ordinary_fields_and_buttons_keep_their_values_and_labels(test_config, fixtures_server):
+    # Masking must not blind the agent: a non-secret field's value still
+    # labels it, a submit input is still named (and flagged sensitive) by its
+    # value, and a button that merely mentions "password" keeps its label.
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/secret_fields.html")
+        obs = session.observe()
+        texts = [el.text for el in obs.elements]
+        assert "plain-visible-value" in texts
+        assert "Reset password" in texts
+        assert "New password" in texts  # a secret field's own label is fine to send
+        submit = next(el for el in obs.elements if el.input_type == "submit")
+        assert submit.text == "Delete account"
+        assert session.is_sensitive(submit.index) is True
+    finally:
+        session.stop()
+
+
+def test_typing_into_a_password_field_still_changes_its_masked_state(test_config, fixtures_server):
+    # VERIFY compares state_fingerprint before/after an action. A masked
+    # password field must still go from empty to "[hidden]" when typed into,
+    # or VERIFY would report typing into it as having no effect.
+    from secret_fields import HIDDEN
+
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/secret_fields.html")
+        before = session.observe()
+        field = next(el for el in before.elements if el.text == "New password")
+        assert field.state == ""
+
+        session.type_text(field.index, "typed-SECRET")
+        after = session.observe()
+
+        typed = next(el for el in after.elements if el.text == "New password")
+        assert typed.state == HIDDEN
+        assert after.state_fingerprint != before.state_fingerprint
+        assert "SECRET" not in after.state_fingerprint
+    finally:
+        session.stop()

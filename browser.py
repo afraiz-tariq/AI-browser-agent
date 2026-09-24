@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from playwright.sync_api import Browser, BrowserContext, Page, TimeoutError as PWTimeout, sync_playwright
 
 from errors import TaskCannotBeCompleted, explain
+from secret_fields import HIDDEN, SECRET_AUTOCOMPLETE, is_secret_label
 from tool_provider import RiskLevel, ToolProvider, ToolSpec
 
 # Tags we consider "interactive" -- i.e. worth showing to the LLM as
@@ -71,7 +72,7 @@ class ElementInfo:
     role: str
     text: str
     input_type: str = ""
-    state: str = ""  # current .checked (checkbox/radio) or .value (everything else) -- see observe()
+    state: str = ""  # current .checked (checkbox/radio) or .value (everything else; HIDDEN for a secret field) -- see observe()
 
 
 @dataclass
@@ -212,11 +213,14 @@ class BrowserSession:
                 tag = handle.evaluate("el => el.tagName.toLowerCase()")
                 role = handle.get_attribute("role") or tag
                 input_type = handle.get_attribute("type") or ""
+                secret = self._is_secret_field(handle, tag, input_type)
                 label = (
                     handle.get_attribute("aria-label")
                     or handle.get_attribute("placeholder")
                     or handle.inner_text()
-                    or handle.get_attribute("value")
+                    # A secret field's value never stands in for its label --
+                    # the label is sent to the model (see secret_fields.py).
+                    or (None if secret else handle.get_attribute("value"))
                     or handle.get_attribute("name")
                     or ""
                 )
@@ -224,7 +228,10 @@ class BrowserSession:
                 if input_type in ("checkbox", "radio"):
                     state = "checked" if handle.evaluate("el => el.checked") else "unchecked"
                 elif tag in ("input", "select", "textarea"):
-                    state = str(handle.evaluate("el => el.value") or "")
+                    value = str(handle.evaluate("el => el.value") or "")
+                    # Masked, but still "" vs HIDDEN, so VERIFY can see that
+                    # typing into an empty password field did something.
+                    state = (HIDDEN if value else "") if secret else value
                 else:
                     state = ""
             except Exception:
@@ -284,11 +291,36 @@ class BrowserSession:
             handle = self._last_elements[index]
             try:
                 tag = handle.evaluate("el => el.tagName.toLowerCase()")
-                label = handle.inner_text() or handle.get_attribute("aria-label") or handle.get_attribute("value") or ""
+                secret = self._is_secret_field(handle, tag, handle.get_attribute("type") or "")
+                label = (
+                    handle.inner_text()
+                    or handle.get_attribute("aria-label")
+                    # value is what names an <input type=submit value="Delete">,
+                    # but in a secret field it's the secret itself.
+                    or (None if secret else handle.get_attribute("value"))
+                    or ""
+                )
                 return f"<{tag}> '{' '.join(label.split())[:60]}'"
             except Exception:
                 pass
         return f"element #{index}"
+
+    @staticmethod
+    def _is_secret_field(handle, tag: str, input_type: str) -> bool:
+        """Whether this element holds a secret whose value must never be sent
+        anywhere -- see secret_fields.py. Buttons can't hold one, so a
+        "Reset password" button keeps its label."""
+        if tag not in ("input", "textarea") or input_type in ("submit", "button", "reset", "checkbox", "radio"):
+            return False
+        if input_type == "password":
+            return True
+        autocomplete = (handle.get_attribute("autocomplete") or "").lower().split()
+        if SECRET_AUTOCOMPLETE.intersection(autocomplete):
+            return True
+        return is_secret_label(
+            handle.get_attribute("aria-label"), handle.get_attribute("placeholder"),
+            handle.get_attribute("name"), handle.get_attribute("id"),
+        )
 
     def is_sensitive(self, index: int) -> bool:
         summary = self.element_summary(index).lower()

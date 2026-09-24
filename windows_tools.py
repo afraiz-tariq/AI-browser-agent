@@ -79,11 +79,31 @@ from typing import Any
 
 from browser import SENSITIVE_KEYWORDS as BROWSER_SENSITIVE_KEYWORDS
 from errors import TaskCannotBeCompleted, explain
+from secret_fields import HIDDEN
 from tool_provider import RiskLevel, ToolProvider, ToolSpec
 
 
 class WindowsAutomationError(Exception):
     """Raised for any Windows arm failure (window/control not found, ...)."""
+
+
+def _is_password_control(ctrl) -> bool:
+    """
+    UI Automation's own IsPassword flag -- the Windows equivalent of an
+    <input type="password">. A control's window_text() goes straight to the
+    model (windows_list_controls, windows_read_control_text), so a password
+    box's contents must never be read through it; see secret_fields.py.
+    Windows usually masks these itself, but this doesn't rely on that.
+
+    Only a real bool/int True counts: any failure to read the flag (older
+    control, win32 backend, a mock in tests) means "not flagged", falling
+    back to the app's own masking rather than blocking every control.
+    """
+    try:
+        flag = ctrl.element_info.element.CurrentIsPassword
+    except Exception:
+        return False
+    return type(flag) in (bool, int) and bool(flag)
 
 
 def resolve_known_folders() -> dict[str, str]:
@@ -370,6 +390,9 @@ class WindowsSession:
         for i, ctrl in enumerate(controls):
             try:
                 ctrl_type = ctrl.friendly_class_name()
+                if _is_password_control(ctrl):
+                    lines.append(f"[{i}] {ctrl_type} (password field) '{HIDDEN}'")
+                    continue
                 text = " ".join((ctrl.window_text() or "").split())[:80]
             except Exception:
                 ctrl_type, text = "unknown", ""
@@ -467,6 +490,8 @@ class WindowsSession:
         window_title = args["window_title"]
         index = int(args["index"])
         ctrl = self._resolve_control(window_title, index)
+        if _is_password_control(ctrl):
+            return f"Control #{index} in '{window_title}' is a password field; its contents are never read."
         try:
             text = ctrl.window_text()
         except Exception as e:

@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 217 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 223 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -301,6 +301,7 @@ ai_browser_agent/
 ├── windows_tools.py     # Windows desktop automation arm (optional): pywinauto (UI Automation) as a ToolProvider
 ├── tool_provider.py    # ToolProvider/ToolSpec contract every arm implements, and the R0-R3 risk-tier policy
 ├── errors.py           # Shared TaskCannotBeCompleted exception + explain() formatter
+├── secret_fields.py    # Which form fields hold secrets, so both arms mask their values before the LLM sees them
 ├── llm.py             # Provider-agnostic LLM client (OpenAI / Anthropic / mock); builds tools from ToolSpecs
 ├── logger.py           # Per-task plain-text logging (with secret redaction)
 ├── config.py           # Loads and validates .env settings
@@ -562,6 +563,12 @@ models later -- nothing else in the code references a specific provider.
   ```
   Ready to save the workbook to 'C:\...\report.xlsx', overwriting it. Continue? [y/n]
   ```
+- The contents of password fields (and fields labelled PIN, CVV, card
+  number, token, API key, one-time code, ...) are never sent to the LLM: the
+  model sees the field's label, and `[hidden]` instead of its value. On
+  Windows, UI Automation's own `IsPassword` flag masks a control in
+  `windows_list_controls` and blocks `windows_read_control_text` on it. See
+  `secret_fields.py`.
 - No password, API key, cookie, or session token is ever written to a log
   file (`logger.py` also redacts anything that looks like a secret as a
   defense in depth).
