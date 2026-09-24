@@ -80,6 +80,32 @@ A `SKIP` is not a failure -- it means that task's `requires(config)` was
 false for your current `.env` (e.g. you haven't turned on
 `ENABLE_MCP_FETCH`). Turn on the relevant flag to include it.
 
+## Baseline: claude-sonnet-5, 2026-09-24
+
+Measured on the user's Windows PC after the one-call page snapshot and prompt
+caching landed. Raw file: `results/2026-09-24-claude-sonnet-5.json`.
+
+| | Value |
+|---|---|
+| Tasks passed | 9 / 9 (3 MCP tasks skipped: not enabled) |
+| Steps (decisions) | 36 (35) |
+| Median time per step: Claude decision | **2,275 ms** |
+| Median time per step: reading the page | 53 ms |
+| Median time per step: doing the action | 21 ms (a first `goto` is ~1.5-2.7 s: Chrome launching) |
+| Share of total task time spent waiting on Claude | 81 s of 104 s (**78%**) |
+| Prompt tokens per decision | ~6,600, of which 84% read from the prompt cache |
+| Output tokens per decision | ~100 |
+| Cost for the whole run | ~$0.15 (would be ~$0.50 without caching), ~$0.004 per decision |
+
+Costs are computed from the token counts at Sonnet 5 list prices ($2 / $10
+per million, cache reads 0.1x, 5-minute cache writes 1.25x); the API doesn't
+return dollar amounts.
+
+What it says: after the snapshot fix, the model call is essentially the whole
+per-step wait. Cost is already small, so the case for a faster decider (Jev,
+see `docs/JEV_VOICE_PLAN.md`) is speed, not money: e.g. the 10-step Calculator
+task spent ~20 of its 22.5 s waiting on decisions.
+
 ## Page-reading speed (free, offline)
 
 ```

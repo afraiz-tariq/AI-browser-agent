@@ -14,6 +14,11 @@ full commit message.
 
 ## 2026-09-24
 
+- Recorded the first live speed/cost baseline (claude-sonnet-5, user's PC):
+  9/9 evals passed; median step = 2.3 s Claude decision + 53 ms page read +
+  21 ms action; prompt cache served 84% of prompt tokens; ~$0.15 for the
+  run. See `evals/README.md` and `evals/results/`.
+
 - Anthropic calls now prompt-cache the system prompt + tool definitions
   (~2.6k tokens, ~3.8k with the Windows arm; identical every step), so steps
   after the first bill that part at ~0.1x input price. Token usage now also

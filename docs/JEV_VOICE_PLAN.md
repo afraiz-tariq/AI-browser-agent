@@ -114,7 +114,8 @@ Each phase ends with `pytest tests/ -q` green and, where marked, a real-run chec
 **Status 2026-09-24:**
 - Done: per-step timing in every output record; `run_evals.py --save`.
 - Done: the one-call snapshot. `evals/bench_observe.py` measured 41–59× faster page reads (200 elements: 4.35 s → 74 ms; 500 elements: 10.8 s → 0.21 s), and the old and new output was checked identical on every fixture. This mattered more than expected: before it, reading a typical 200–500 element page cost **4–11 s per step** in this container, likely more than the Claude call itself. Jev's speed advantage should be re-judged against the *new* numbers, not the old ones.
-- Remaining: the live Claude baseline (`python evals/run_evals.py --save evals/results/baseline.json`) needs a real API key, so it has to run on the user's machine.
+- Done (user's PC, claude-sonnet-5): 9/9 evals passed. Median step: **Claude decision 2,275 ms**, page read 53 ms, action 21 ms. Decisions were 78% of total task time. Prompt caching served 84% of prompt tokens; the whole run cost about $0.15 (about $0.50 uncached). Table in `evals/README.md`, raw file in `evals/results/`.
+- **What this changes for Phase 1:** cost is no longer an argument for Jev (about $0.004 per Claude decision already). Speed is: Jev's reported 0.13–0.38 s per decision against Claude's measured 2.3 s would cut roughly 2 s from every browser/Windows step, which is what voice control needs. The Phase 5 comparison should be run against this file.
 
 ### Phase 1: Jev client and browser decider (behind a flag, default off)
 - `jev.py`: one `httpx` client, retry once on timeout/5xx, `JevError` → the same `LLMError` path, `validate_choice()`. Nothing executes on an invalid answer.
