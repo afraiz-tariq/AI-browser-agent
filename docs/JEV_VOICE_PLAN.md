@@ -160,6 +160,15 @@ Each phase ends with `pytest tests/ -q` green and, where marked, a real-run chec
 - Build the element table from `windows_list_controls` output and use the same operation + target heads as the browser. Keep `invoke()`, paced `type_keys()`, exact-title matching and dynamic click risk unchanged.
 - **Exit:** the Notepad and Calculator end-to-end tasks from bugs 9–11 pass with `DECIDER=hybrid`.
 
+**Status 2026-09-24:** built and offline-tested, not yet measured live.
+- `WindowsSession.last_listing` records the latest `windows_list_controls` result as data, at no extra UIA cost. It's cleared on launch, and on closing that window.
+- `JevDecider` uses it when the last action was inside that window. The operations are CLICK, TYPE_TEXT (a span of the task, never into a password box), REFRESH (re-list, not twice in a row), DONE and OTHER, always with the listing's exact window title (bug 10).
+- Launching, switching and closing windows, and reading results, stay with Claude.
+- Also done from the Phase 1 follow-ups:
+  - Jev is only asked when the last action was on a page or in a listed window.
+  - Jev can scroll pages that have no controls.
+  - One shared TypeSafe connection is reused across tasks.
+
 ### Phase 5: decide the default from numbers
 - Run evals for `claude` and `hybrid`: success rate, median time, $ per task, number of escalations.
 - Make `hybrid` the default **only if** its success rate is no worse and it is clearly faster or cheaper. Record the decision and numbers in `ARCHITECTURE_DECISIONS.md`.

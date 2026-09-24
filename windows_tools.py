@@ -306,6 +306,13 @@ class WindowsSession:
         # BrowserSession._last_elements, one list per window instead of one
         # global list since a task may have more than one window open.
         self._last_controls: dict[str, list] = {}
+        # The most recent windows_list_controls result as data, for the
+        # optional Jev decider (jev.py, DECIDER=hybrid) to choose a control
+        # from: (window_title, [{"i", "type", "text", "password"}, ...]).
+        # The same lines the model already got as text -- no extra UIA
+        # calls. Cleared when a launch or a close makes it about the wrong
+        # window, so Jev never picks from a listing that no longer applies.
+        self.last_listing: tuple[str, list[dict]] | None = None
 
     def execute(self, action: str, args: dict) -> str:
         """
@@ -332,6 +339,7 @@ class WindowsSession:
             raise WindowsAutomationError(
                 f"Could not launch '{path}': {e}. Check the path is correct and the file exists."
             ) from e
+        self.last_listing = None  # a new app is about to be in front; the old listing is for another window
         return f"Launched '{path}'."
 
     def _do_windows_list_windows(self, args: dict) -> str:
@@ -387,16 +395,20 @@ class WindowsSession:
         if not controls:
             return f"No controls found in '{window_title}'."
         lines = []
+        listing = []
         for i, ctrl in enumerate(controls):
             try:
                 ctrl_type = ctrl.friendly_class_name()
                 if _is_password_control(ctrl):
                     lines.append(f"[{i}] {ctrl_type} (password field) '{HIDDEN}'")
+                    listing.append({"i": i, "type": ctrl_type, "text": HIDDEN, "password": True})
                     continue
                 text = " ".join((ctrl.window_text() or "").split())[:80]
             except Exception:
                 ctrl_type, text = "unknown", ""
             lines.append(f"[{i}] {ctrl_type} '{text}'")
+            listing.append({"i": i, "type": ctrl_type, "text": text, "password": False})
+        self.last_listing = (window_title, listing)
         return f"Controls in '{window_title}':\n" + "\n".join(lines)
 
     def _resolve_control(self, window_title: str, index: int):
@@ -506,6 +518,8 @@ class WindowsSession:
         except Exception as e:
             raise WindowsAutomationError(f"Could not close '{window_title}': {e}") from e
         self._last_controls.pop(window_title, None)
+        if self.last_listing and self.last_listing[0] == window_title:
+            self.last_listing = None
         return f"Closed '{window_title}'."
 
 

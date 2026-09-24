@@ -69,6 +69,11 @@ ELEMENTS = [
 ]
 
 
+# The decider only asks Jev when the task is currently on a page -- i.e. the
+# previous step was a browser action (history entries start with the action).
+ON_PAGE = ["goto {'url': 'https://example.com'} -> thought: Opening."]
+
+
 def _decider(scripted, claude_replies=()):
     mock = MockProvider(list(claude_replies))
     return JevDecider(LLMClient(mock), _client(scripted)), mock
@@ -149,7 +154,7 @@ CLAUDE_FINISH = {"action": "finish", "thought": "Claude here.", "args": {"summar
 
 def test_click_with_confidence_is_decided_by_jev():
     decider, mock = _decider(ScriptedJev({"operation": "CLICK", "click_target": "1"}))
-    decision = decider.decide_next_action("Press Go.", [], _obs(ELEMENTS))
+    decision = decider.decide_next_action("Press Go.", ON_PAGE, _obs(ELEMENTS))
     assert decision["action"] == "click" and decision["args"] == {"index": 1}
     assert decision["decider"] == "jev"
     assert mock.calls == []  # Claude never asked
@@ -157,7 +162,7 @@ def test_click_with_confidence_is_decided_by_jev():
 
 def test_low_confidence_escalates_to_claude():
     decider, mock = _decider(ScriptedJev({"operation": "CLICK", "click_target": "1", "_conf": 0.3}), [CLAUDE_FINISH])
-    decision = decider.decide_next_action("Press Go.", [], _obs(ELEMENTS))
+    decision = decider.decide_next_action("Press Go.", ON_PAGE, _obs(ELEMENTS))
     assert decision["decider"] == "claude" and decision["action"] == "finish"
     assert "unsure" in decision["escalation_reason"]
 
@@ -168,13 +173,13 @@ def test_done_and_other_go_to_claude(operation):
     # "summary must have real content" guarantee). OTHER: a URL, Excel, a
     # login page... -- things Jev can't express.
     decider, mock = _decider(ScriptedJev({"operation": operation}), [CLAUDE_FINISH])
-    decision = decider.decide_next_action("Find the answer.", [], _obs(ELEMENTS))
+    decision = decider.decide_next_action("Find the answer.", ON_PAGE, _obs(ELEMENTS))
     assert decision["decider"] == "claude" and len(mock.calls) == 1
 
 
 def test_an_answer_outside_the_offered_ids_never_executes():
     decider, mock = _decider(ScriptedJev({"operation": "CLICK", "click_target": "999"}), [CLAUDE_FINISH])
-    decision = decider.decide_next_action("Press Go.", [], _obs(ELEMENTS))
+    decision = decider.decide_next_action("Press Go.", ON_PAGE, _obs(ELEMENTS))
     assert decision["decider"] == "claude"
     assert "Invalid answer" in decision["escalation_reason"]
 
@@ -182,7 +187,7 @@ def test_an_answer_outside_the_offered_ids_never_executes():
 def test_type_text_uses_a_span_of_the_task_and_never_targets_a_password_field():
     scripted = ScriptedJev({"operation": "TYPE_TEXT", "type_target": "0", "type_value": "1", "type_submit": 0.9})
     decider, _ = _decider(scripted)
-    decision = decider.decide_next_action("Search for 'openai' please.", [], _obs(ELEMENTS))
+    decision = decider.decide_next_action("Search for 'openai' please.", ON_PAGE, _obs(ELEMENTS))
     assert decision["action"] == "type"
     assert decision["args"] == {"index": 0, "text": "openai", "submit": True}
     questions = scripted.requests[0]["body"]["questions"]
@@ -193,7 +198,7 @@ def test_type_text_uses_a_span_of_the_task_and_never_targets_a_password_field():
 def test_type_text_is_not_offered_when_the_task_has_nothing_to_type():
     scripted = ScriptedJev({"operation": "CLICK", "click_target": "1"})
     decider, _ = _decider(scripted)
-    decider.decide_next_action("Press the Go button.", [], _obs(ELEMENTS))
+    decider.decide_next_action("Press the Go button.", ON_PAGE, _obs(ELEMENTS))
     questions = scripted.requests[0]["body"]["questions"]
     assert "TYPE_TEXT" not in questions["operation"]["criteria"]
     assert "type_target" not in questions
@@ -202,7 +207,7 @@ def test_type_text_is_not_offered_when_the_task_has_nothing_to_type():
 def test_secret_values_never_reach_jev():
     scripted = ScriptedJev({"operation": "CLICK", "click_target": "1"})
     decider, _ = _decider(scripted)
-    decider.decide_next_action("Press Go.", [], _obs(ELEMENTS))
+    decider.decide_next_action("Press Go.", ON_PAGE, _obs(ELEMENTS))
     assert "[hidden]" in json.dumps(scripted.requests[0]["body"])  # masked by browser.py, passed through as-is
 
 
@@ -216,15 +221,15 @@ def test_no_page_and_login_walls_go_straight_to_claude_without_asking_jev():
 
 def test_jev_being_down_falls_back_to_claude():
     decider, mock = _decider(ScriptedJev(status=503), [CLAUDE_FINISH])
-    decision = decider.decide_next_action("Press Go.", [], _obs(ELEMENTS))
+    decision = decider.decide_next_action("Press Go.", ON_PAGE, _obs(ELEMENTS))
     assert decision["decider"] == "claude"
 
 
 def test_usage_reports_jev_and_claude_side_by_side():
     decider, _ = _decider(ScriptedJev({"operation": "CLICK", "click_target": "1"}, {"operation": "DONE"}),
                           [CLAUDE_FINISH])
-    decider.decide_next_action("Press Go.", [], _obs(ELEMENTS))
-    decider.decide_next_action("Press Go.", [], _obs(ELEMENTS))
+    decider.decide_next_action("Press Go.", ON_PAGE, _obs(ELEMENTS))
+    decider.decide_next_action("Press Go.", ON_PAGE, _obs(ELEMENTS))
     usage = decider.get_usage()
     assert usage["jev_requests"] == 2 and usage["jev_decisions"] == 1 and usage["claude_escalations"] == 1
     assert usage["jev_input_tokens"] == 2000
@@ -282,3 +287,115 @@ def test_a_jev_chosen_sensitive_click_still_asks_for_confirmation(test_config, f
 
     assert outcome["success"] is False
     assert asked and "declined" in outcome["result"].lower()
+
+
+# --- routing: only ask Jev when on a page or in a listed window --------------
+
+def test_jev_is_not_asked_after_a_non_page_step():
+    # After an Excel step Jev could only answer OTHER; asking costs ~0.5 s for
+    # nothing (2026-09-24 evals). Claude decides directly.
+    scripted = ScriptedJev()
+    decider, mock = _decider(scripted, [CLAUDE_FINISH])
+    history = ["excel_save {} -> thought: Saving. [RESULT: saved]"]
+    assert decider.decide_next_action("Save it.", history, _obs(ELEMENTS))["decider"] == "claude"
+    assert scripted.requests == []
+
+
+def test_jev_can_scroll_a_page_with_no_elements():
+    # The long-page eval: text only, no controls. Previously skipped Jev.
+    scripted = ScriptedJev({"operation": "SCROLL_DOWN"})
+    decider, _ = _decider(scripted)
+    decision = decider.decide_next_action("Read to the end.", ON_PAGE, _obs([], truncated=True))
+    assert decision == {"action": "scroll", "args": {"direction": "down"},
+                        "thought": "[jev 0.90] scroll down", "decider": "jev"}
+    questions = scripted.requests[0]["body"]["questions"]
+    assert "CLICK" not in questions["operation"]["criteria"] and "click_target" not in questions
+
+
+def test_shared_client_is_reused_across_tasks():
+    from jev import shared_client
+
+    assert shared_client("k1", "m") is shared_client("k1", "m")
+    assert shared_client("k1", "m") is not shared_client("k2", "m")
+
+
+# --- Windows app windows ------------------------------------------------------
+
+CALC = ("Calculator", [
+    {"i": 0, "type": "Button", "text": "Seven", "password": False},
+    {"i": 1, "type": "Button", "text": "Plus", "password": False},
+    {"i": 2, "type": "Button", "text": "Three", "password": False},
+    {"i": 3, "type": "Button", "text": "Equals", "password": False},
+    {"i": 4, "type": "Edit", "text": "[hidden]", "password": True},
+])
+LISTED = ["windows_list_controls {'window_title': 'Calculator'} -> thought: Listing. [RESULT: Controls...]"]
+
+
+def _windows_decider(scripted, claude_replies=(), listing=CALC):
+    mock = MockProvider(list(claude_replies))
+    return JevDecider(LLMClient(mock), _client(scripted), windows_listing=lambda: listing), mock
+
+
+def test_jev_clicks_a_control_in_the_listed_window_by_exact_title():
+    scripted = ScriptedJev({"operation": "CLICK", "click_target": "0"})
+    decider, mock = _windows_decider(scripted)
+    decision = decider.decide_next_action("Compute 7 + 3 in Calculator.", LISTED, None)
+    assert decision["action"] == "windows_click_control"
+    assert decision["args"] == {"window_title": "Calculator", "index": 0}  # exact title, never a guess (bug 10)
+    assert decision["decider"] == "jev" and mock.calls == []
+    state = scripted.requests[0]["body"]["state"]
+    assert state["window"] == "Calculator" and len(state["controls"]) == 5
+
+
+def test_password_controls_are_never_click_or_type_targets():
+    scripted = ScriptedJev({"operation": "CLICK", "click_target": "0"})
+    decider, _ = _windows_decider(scripted)
+    decider.decide_next_action("Type 'hello' somewhere.", LISTED, None)
+    questions = scripted.requests[0]["body"]["questions"]
+    assert "4" not in questions["click_target"]["criteria"]
+    assert "TYPE_TEXT" not in questions["operation"]["criteria"]  # the only Edit is a password box
+    assert "[hidden]" in json.dumps(scripted.requests[0]["body"]) and "hunter" not in json.dumps(scripted.requests[0])
+
+
+def test_refresh_relists_the_same_window_but_not_twice_in_a_row():
+    clicked = ["windows_click_control {'window_title': 'Calculator', 'index': 3} -> thought: Equals."]
+    scripted = ScriptedJev({"operation": "REFRESH"})
+    decider, _ = _windows_decider(scripted)
+    decision = decider.decide_next_action("Compute 7 + 3.", clicked, None)
+    assert decision["action"] == "windows_list_controls" and decision["args"] == {"window_title": "Calculator"}
+
+    scripted2 = ScriptedJev({"operation": "CLICK", "click_target": "0"})
+    decider2, _ = _windows_decider(scripted2)
+    decider2.decide_next_action("Compute 7 + 3.", LISTED, None)
+    assert "REFRESH" not in scripted2.requests[0]["body"]["questions"]["operation"]["criteria"]
+
+
+def test_windows_done_or_no_listing_goes_to_claude():
+    decider, mock = _windows_decider(ScriptedJev({"operation": "DONE"}), [CLAUDE_FINISH])
+    assert decider.decide_next_action("Compute 7 + 3.", LISTED, None)["decider"] == "claude"
+
+    scripted = ScriptedJev()
+    no_listing, _ = _windows_decider(scripted, [CLAUDE_FINISH], listing=None)
+    assert no_listing.decide_next_action("Compute 7 + 3.", LISTED, None)["decider"] == "claude"
+    launched = ["windows_launch_app {'path': 'calc.exe'} -> thought: Launch."]
+    other, _ = _windows_decider(scripted, [CLAUDE_FINISH])
+    assert other.decide_next_action("Compute 7 + 3.", launched, None)["decider"] == "claude"
+    assert scripted.requests == []
+
+
+def test_windows_type_uses_a_span_of_the_task():
+    listing = ("Untitled - Notepad", [{"i": 0, "type": "Edit", "text": "Text editor", "password": False}])
+    scripted = ScriptedJev({"operation": "TYPE_TEXT", "type_target": "0", "type_value": "1"})
+    decider, _ = _windows_decider(scripted, listing=listing)
+    listed = ["windows_list_controls {'window_title': 'Untitled - Notepad'} -> thought: Listing."]
+    decision = decider.decide_next_action("Type 'hello world' in Notepad.", listed, None)
+    assert decision["action"] == "windows_type_into_control"
+    assert decision["args"] == {"window_title": "Untitled - Notepad", "index": 0, "text": "hello world"}
+
+
+def test_jev_does_not_pick_from_a_listing_of_a_different_window():
+    scripted = ScriptedJev()
+    decider, _ = _windows_decider(scripted, [CLAUDE_FINISH])
+    elsewhere = ["windows_click_control {'window_title': 'Untitled - Notepad', 'index': 2} -> thought: Click."]
+    assert decider.decide_next_action("Compute 7 + 3.", elsewhere, None)["decider"] == "claude"
+    assert scripted.requests == []

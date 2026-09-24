@@ -405,3 +405,45 @@ def test_is_password_control_ignores_an_unreadable_or_non_bool_flag():
     type(broken).element_info = property(lambda self: (_ for _ in ()).throw(RuntimeError("no UIA")))
     assert windows_tools._is_password_control(broken) is False
     assert windows_tools._is_password_control(_password_ctrl()) is True
+
+
+def _fake_app(monkeypatch, controls):
+    import pywinauto.application
+
+    fake_window = MagicMock()
+    fake_window.descendants.return_value = controls
+    fake_app = MagicMock()
+    fake_app.connect.return_value = fake_app
+    fake_app.window.return_value = fake_window
+    monkeypatch.setattr(pywinauto.application, "Application", MagicMock(return_value=fake_app))
+
+
+def test_list_controls_records_a_structured_listing_for_the_jev_decider(monkeypatch):
+    # jev.py (DECIDER=hybrid) picks a control from this instead of parsing
+    # the text result; password controls are flagged and their text masked.
+    button = MagicMock()
+    button.friendly_class_name.return_value = "Button"
+    button.window_text.return_value = "Seven"
+    _fake_app(monkeypatch, [button, _password_ctrl()])
+
+    session = WindowsSession()
+    session.execute("windows_list_controls", {"window_title": "Calculator"})
+
+    assert session.last_listing == ("Calculator", [
+        {"i": 0, "type": "Button", "text": "Seven", "password": False},
+        {"i": 1, "type": "Edit", "text": "[hidden]", "password": True},
+    ])
+
+
+def test_launch_and_close_clear_the_listing_so_jev_never_picks_from_a_stale_window(monkeypatch):
+    session = WindowsSession()
+    session.last_listing = ("Calculator", [{"i": 0, "type": "Button", "text": "Seven", "password": False}])
+    _fake_app(monkeypatch, [])
+    session.execute("windows_launch_app", {"path": "notepad.exe"})
+    assert session.last_listing is None
+
+    session.last_listing = ("Calculator", [])
+    session.execute("windows_close_window", {"window_title": "Some Other Window"})
+    assert session.last_listing == ("Calculator", [])  # closing a different window keeps it
+    session.execute("windows_close_window", {"window_title": "Calculator"})
+    assert session.last_listing is None

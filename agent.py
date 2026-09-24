@@ -128,6 +128,7 @@ def run_task(
             confirm_wait["ms"] += (time.perf_counter() - started) * 1000
     session = BrowserSession(config)  # Chrome itself isn't launched until first use -- see BrowserToolProvider.ensure_ready
     excel_session = ExcelSession()
+    windows_session: WindowsSession | None = None  # set below only if ENABLE_WINDOWS_AUTOMATION
     mcp_providers: list[MCPToolProvider] = []  # only non-empty per ENABLE_MCP_* flags -- closed in the finally below
 
     history: list[str] = []
@@ -174,7 +175,8 @@ def run_task(
             # No subprocess/thread of its own (unlike the MCP arms above),
             # so no close()/cleanup path is needed in the finally below --
             # see WindowsSession's docstring.
-            providers.append(WindowsToolProvider(WindowsSession()))
+            windows_session = WindowsSession()
+            providers.append(WindowsToolProvider(windows_session))
 
         tool_specs: list[ToolSpec] = []
         tool_owner: dict[str, ToolProvider] = {}
@@ -197,11 +199,12 @@ def run_task(
             if config.decider == "hybrid":
                 # Jev picks browser click/type/scroll steps; the Claude client
                 # just built decides everything else. See jev.py.
-                from jev import JevClient, JevDecider
+                from jev import JevDecider, shared_client
 
                 llm = JevDecider(
-                    llm, JevClient(config.typesafe_api_key, config.typesafe_model),
+                    llm, shared_client(config.typesafe_api_key, config.typesafe_model),
                     min_confidence=config.jev_min_confidence,
+                    windows_listing=(lambda: windows_session.last_listing) if windows_session else None,
                 )
 
         for step in range(1, config.max_steps + 1):

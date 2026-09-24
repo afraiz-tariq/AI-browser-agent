@@ -14,6 +14,14 @@ full commit message.
 
 ## 2026-09-24
 
+- Jev now also decides steps inside Windows app windows (`DECIDER=hybrid`):
+  click a control, type a span of the task into one, or re-read the window's
+  controls, always by the exact title from the latest listing; password
+  boxes are never targets. Jev is now only asked when the task is on a page
+  or in a just-listed window (no more wasted calls after Excel/launch
+  steps), can scroll pages that have no controls, and reuses one TypeSafe
+  connection across tasks. Offline-tested; not yet measured live.
+
 - First live claude-vs-hybrid comparison (Sonnet 5, 11 tasks, user's PC):
   hybrid 11/11 vs 10/11, total time -18%, decision wait -29%, Jev steps
   median 272 ms vs ~2.2 s for Claude, Jev cost ~$0.0007. See
