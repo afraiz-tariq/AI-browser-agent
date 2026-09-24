@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 415 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 418 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -476,8 +476,14 @@ bottom-right corner plus an **icon by the clock**:
 - The window shows what it heard, the step it's on ("Step 2: typing 'ABC'
   into the search box"), and the result. Drag it anywhere; `–` hides it,
   and tapping the talk key brings it back.
+- **Type instead of talking:** click the box at the bottom ("Type a task
+  and press Enter..."), type e.g. "open notepad and write hello", press
+  Enter. It runs exactly like a spoken task (quick commands included) and
+  asks the same confirmations. A new task is refused while one is still
+  running (F10 stops it). In the terminal (`python voice.py`) you can also
+  just type a task and press Enter.
 - Before a risky action it shows **Yes / No buttons**. Click one, or say
-  "yes"/"no" -- whichever comes first counts. If you say nothing, the
+  "yes"/"no" (or type it in the box) -- whichever comes first counts. If you say nothing, the
   buttons stay up for 30 seconds, then it's a no. The agent can't click
   them itself: it's paused, waiting for your answer, while they're up.
 - The icon's colour shows the state (grey ready, red listening, blue

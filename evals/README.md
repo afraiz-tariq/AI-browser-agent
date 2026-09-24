@@ -1,6 +1,6 @@
 # Eval suite
 
-`tests/*.py` (415 tests) drive the agent loop with `MockProvider` --
+`tests/*.py` (418 tests) drive the agent loop with `MockProvider` --
 scripted replies -- to prove the *mechanism* is correct: dispatch, risk
 gating, the VERIFY step, text pagination, stuck-loop detection, and so on.
 None of those tests ever ask a real model to reason its way through

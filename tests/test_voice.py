@@ -433,3 +433,45 @@ def test_the_tray_icon_is_a_dot_in_the_status_colour():
     assert image.size == (64, 64)
     assert image.getpixel((32, 32))[:3] == (0xEF, 0x44, 0x44)  # red while listening
     assert image.getpixel((1, 1))[3] == 0  # transparent corners
+
+
+# --- typing a task instead of saying it ----------------------------------------
+
+import queue  # noqa: E402
+
+from voice import submit_typed  # noqa: E402
+
+
+def test_a_typed_task_takes_the_same_path_as_a_spoken_one():
+    fakes = _Fakes([])  # nothing to transcribe: typed text isn't audio
+    ui = _FakeUi()
+    assistant = VoiceAssistant(None, fakes.transcribe, fakes.said.append, lambda s, a=None: None, fakes.run,
+                               log=lambda m: None, ui=ui)
+    outcome = assistant.handle_job(("text", "Open Notepad and type hello."))
+    assert outcome["success"] is True
+    assert fakes.runs[0]["text"].startswith("Open Notepad and type hello.")
+    assert fakes.runs[0]["confirm"] == assistant.confirm  # same confirmations as speech
+    assert ("heard", "Open Notepad and type hello.") in ui.events
+
+
+def test_a_typed_quick_command_is_instant_too():
+    from tests.test_quick_commands import _quick
+
+    quick, done = _quick()
+    fakes = _Fakes([])
+    assistant = VoiceAssistant(None, fakes.transcribe, fakes.said.append, lambda s, a=None: None, fakes.run,
+                               log=lambda m: None, quick=quick)
+    assert assistant.handle_job(("text", "volume up"))["quick"] is True
+    assert fakes.runs == [] and done[0] == ("key", "volume_up")
+
+
+def test_a_typed_task_waits_its_turn_it_is_not_queued_behind_a_running_one():
+    jobs, state = queue.Queue(), {"busy": False}
+    assert submit_typed("  open notepad ", state, jobs) is True
+    assert jobs.get_nowait() == ("text", "open notepad")
+    # Still busy: refused, so nothing (the agent included, typing into the
+    # window while it runs) can line up another task.
+    assert submit_typed("open calculator", state, jobs) is False
+    assert jobs.empty()
+    state["busy"] = False
+    assert submit_typed("   ", state, jobs) is False  # nothing typed

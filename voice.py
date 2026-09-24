@@ -9,7 +9,8 @@ Voice front-end: tap a key, say a task, the agent does it and says the result.
     python voice.py --mic-test   # troubleshooting: record 4 s and show what was heard
 
 Tap VOICE_PTT_KEY (default: right Ctrl) and speak; recording ends by itself
-when you stop talking (or tap again). VOICE_MODE=hold restores hold-to-talk.
+when you stop talking (or tap again). Or type the task: in the window's
+text box, or in the terminal, and press Enter -- the same path either way. VOICE_MODE=hold restores hold-to-talk.
 Press VOICE_STOP_KEY (default: F10) to stop a running task between steps.
 Ctrl+C in this window (or closing it) quits.
 
@@ -187,6 +188,21 @@ def make_voice_confirm(
     return confirm
 
 
+def submit_typed(text: str, state: dict, jobs: "queue.Queue") -> bool:
+    """Queue a typed task unless one is already running or waiting (then
+    False: the text stays in the box). Refusing rather than queueing also
+    means the agent can't line up a task of its own by typing into this
+    window while it runs -- the window's box is visible to its Windows arm."""
+    text = text.strip()
+    if not text:
+        return False
+    if state["busy"]:
+        return False
+    state["busy"] = True
+    jobs.put(("text", text))
+    return True
+
+
 def result_for_window(outcome: dict) -> str:
     """The result as the window shows it: the one-sentence summary, or for a
     failure what happened and why (not the long "what you can do")."""
@@ -236,6 +252,23 @@ class VoiceAssistant:
             self.ui.status("ready", "Didn't catch that -- try again")
             return None
         self.log(f"\nYou said: {text}")
+        return self.handle_text(text)
+
+    def handle_job(self, job: tuple[str, object]) -> dict | None:
+        """One queued job: ("audio", recording) or ("text", typed task)."""
+        kind, payload = job
+        if kind == "text":
+            self.log(f"\nYou typed: {payload}")
+            return self.handle_text(str(payload))
+        return self.handle_audio(payload)
+
+    def handle_text(self, text: str) -> dict | None:
+        """A task as text -- spoken (after transcribing) or typed. Same path
+        either way: quick command if it is one, else the full agent."""
+        text = text.strip()
+        if not text:
+            return None
+        self.ui.status("working", "Got it...")
         self.ui.heard(text)
         if self.quick is not None:
             try:
@@ -661,7 +694,18 @@ def main() -> None:
         sys.exit(1)
 
     verb = "Hold" if mode == "hold" else "Tap"
-    hint = f"{verb} {config.voice_ptt_key} and speak. {config.voice_stop_key} stops a task."
+    hint = f"{verb} {config.voice_ptt_key} and speak, or type below. {config.voice_stop_key} stops a task."
+    jobs: queue.Queue = queue.Queue()
+    state = {"recording": False, "busy": False, "detector": None, "paused": False}
+
+    def on_typed(text: str) -> bool:
+        if submit_typed(text, state, jobs):
+            return True
+        if ui is not None:
+            ui.status("working", f"Still working on the last task -- {config.voice_stop_key} stops it")
+        print("  [voice] still working on the last task -- press the stop key to cancel it.")
+        return False
+
     ui, root, tray = None, None, None
     if config.voice_ui:
         try:
@@ -670,7 +714,7 @@ def main() -> None:
             from voice_ui import Overlay, Tray
 
             root = tk.Tk()
-            ui = Overlay(root, hint, on_status=lambda kind: tray and tray.set_status(kind))
+            ui = Overlay(root, hint, on_status=lambda kind: tray and tray.set_status(kind), on_text=on_typed)
         except Exception as e:  # noqa: BLE001 -- e.g. tkinter missing: fall back to the terminal
             if _no_console:
                 _alert(f"Could not open the voice window ({e}). Run 'python voice.py' in a terminal instead.")
@@ -678,8 +722,6 @@ def main() -> None:
             print(f"  [voice] no window ({e}); using this terminal instead.")
             ui, root = None, None
 
-    jobs: queue.Queue = queue.Queue()
-    state = {"recording": False, "busy": False, "detector": None, "paused": False}
     ready = threading.Event()
     holder: dict = {}
 
@@ -694,10 +736,10 @@ def main() -> None:
             ui.status("ready", f"Ready -- {verb.lower()} {config.voice_ptt_key}")
         speaker(f"Ready. {verb} {config.voice_ptt_key} and speak.")
         while True:
-            audio = jobs.get()
+            job = jobs.get()
             state["busy"] = True
             try:
-                holder["assistant"].handle_audio(audio)
+                holder["assistant"].handle_job(job)
             except Exception as e:  # one bad task must not end the voice loop
                 print(f"  [voice] error: {e}")
                 if ui is not None:
@@ -745,7 +787,8 @@ def main() -> None:
             show_status("ready", f"Didn't hear anything -- {verb.lower()} and speak again")
             return
         print(f"  [voice] got {len(audio) / SAMPLE_RATE:.1f} s of audio, transcribing...")
-        jobs.put(audio)
+        state["busy"] = True
+        jobs.put(("audio", audio))
 
     ptt = PushToTalk()
 
@@ -764,6 +807,15 @@ def main() -> None:
     print(f"{verb} {config.voice_ptt_key} to talk, {config.voice_stop_key} to stop a task, "
           + ("Quit from the icon by the clock." if ui is not None else "Ctrl+C here (or close this window) to quit."))
     print("  (Nothing happens when you press the key? Run: python voice.py --keys)")
+    if not _no_console and sys.stdin is not None and sys.stdin.isatty():
+        print("  You can also type a task here and press Enter.")
+
+        def read_typed() -> None:
+            for line in sys.stdin:
+                if line.strip():
+                    on_typed(line)
+
+        threading.Thread(target=read_typed, daemon=True).start()
 
     if ui is not None:
         def set_paused(paused: bool) -> None:

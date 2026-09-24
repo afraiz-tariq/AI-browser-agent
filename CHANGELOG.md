@@ -14,6 +14,11 @@ full commit message.
 
 ## 2026-09-25
 
+- Type a task instead of saying it: a text box in the voice window (and
+  typing in the terminal) runs it through the same path as a spoken task,
+  confirmations included. Typing "yes"/"no" answers an open question. A
+  typed task is refused, not queued, while one is running.
+
 - Voice looks like an app now: `start_voice.bat` runs it without a
   terminal, as a small floating window (what it heard, the current step,
   the result) and an icon by the clock (state colour; Show window, Pause

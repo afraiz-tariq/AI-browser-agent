@@ -1,8 +1,9 @@
 """
 The voice assistant's small floating window and tray icon (Windows), so it
 feels like an app instead of a terminal: the window shows what it heard,
-which step it's on and the result, and puts up Yes / No buttons when the
-agent asks before a risky action; the icon by the clock shows the state and
+which step it's on and the result, has a text box to type a task instead
+of saying it, and puts up Yes / No buttons when the agent asks before a
+risky action; the icon by the clock shows the state and
 has Show window / Pause microphone / Open log / Quit.
 
 The pattern other desktop voice agents use (a floating panel with approval
@@ -102,13 +103,19 @@ class Overlay:
 
     WIDTH = 380
 
-    def __init__(self, root, hint: str, on_status: Callable[[str], None] | None = None):
+    PLACEHOLDER = "Type a task and press Enter..."
+
+    def __init__(self, root, hint: str, on_status: Callable[[str], None] | None = None,
+                 on_text: Callable[[str], bool] | None = None):
         import tkinter as tk
 
         self._tk = tk
         self.root = root
         self._calls: queue.Queue = queue.Queue()
         self._on_status = on_status or (lambda kind: None)
+        # A typed task goes here (voice.py's submit_typed); False = not taken
+        # (still busy), so the text stays in the box.
+        self._on_text = on_text
         self._choice: Choice | None = None
         self._offset: tuple[int, int] | None = None  # distance from the bottom-right corner, once dragged
 
@@ -150,6 +157,21 @@ class Overlay:
                              activebackground="#374151", command=lambda: self._click(False))
         self._yes.pack(side="left")
         self._no.pack(side="left", padx=(8, 0))
+
+        # The text box: type a task instead of saying it.
+        self._entry = None
+        if on_text is not None:
+            self._entry = tk.Entry(frame, bg="#1f2937", fg=muted, insertbackground=fg, relief="flat",
+                                   font=("Segoe UI", 10), highlightthickness=1, highlightbackground="#374151",
+                                   highlightcolor="#3b82f6")
+            self._entry.insert(0, self.PLACEHOLDER)
+            self._entry.pack(fill="x", pady=(8, 0), ipady=4)
+            self._entry.bind("<Button-1>", self._focus_entry)
+            self._entry.bind("<FocusIn>", lambda e: self._clear_placeholder())
+            self._entry.bind("<FocusOut>", lambda e: self._restore_placeholder())
+            self._entry.bind("<Return>", lambda e: self._submit())
+            self._entry.bind("<Escape>", lambda e: self.root.focus_set())
+            self._fg = fg
 
         for widget in (frame, top, self._status, self._heard, self._detail):
             widget.bind("<ButtonPress-1>", self._drag_start)
@@ -219,7 +241,10 @@ class Overlay:
         self._choice = choice
         self._set_status("asking", "Allow this?")
         self._detail.configure(text=prompt)
-        self._buttons.pack(anchor="w", pady=(8, 0))
+        if self._entry is not None:
+            self._buttons.pack(anchor="w", pady=(8, 0), before=self._entry)
+        else:
+            self._buttons.pack(anchor="w", pady=(8, 0))
         self._show()
 
     def _close_question(self) -> None:
@@ -235,6 +260,37 @@ class Overlay:
             self._detail.configure(text=("Yes -- going ahead." if value else "No -- not doing it."))
             self._buttons.pack_forget()
             self._place()
+
+    def _focus_entry(self, event=None) -> None:
+        # A window without a title bar doesn't always get the keyboard on a
+        # click; ask for it explicitly so typing lands in the box.
+        self.root.focus_force()
+        self._entry.focus_set()
+
+    def _clear_placeholder(self) -> None:
+        if self._entry.get() == self.PLACEHOLDER:
+            self._entry.delete(0, "end")
+            self._entry.configure(fg=self._fg)
+
+    def _restore_placeholder(self) -> None:
+        if not self._entry.get():
+            self._entry.insert(0, self.PLACEHOLDER)
+            self._entry.configure(fg="#9ca3af")
+
+    def _submit(self) -> None:
+        text = self._entry.get().strip()
+        if not text or text == self.PLACEHOLDER:
+            return
+        if self._choice is not None:
+            # A question is open: a typed plain "yes" / "no" answers it like
+            # the buttons (anything else is left in the box).
+            answer = text.lower().strip(" .!")
+            if answer in ("yes", "no"):
+                self._entry.delete(0, "end")
+                self._click(answer == "yes")
+            return
+        if self._on_text(text):
+            self._entry.delete(0, "end")
 
     def _hide(self) -> None:
         if self._choice is not None:
