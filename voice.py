@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-Voice front-end: hold a key, say a task, the agent does it and says the result.
+Voice front-end: tap a key, say a task, the agent does it and says the result.
 
     python voice.py
+    start_voice.bat              # the same, without opening a terminal or activating .venv
+    python voice.py --autostart on    # start it whenever you log in to Windows (off: undo)
     python voice.py --keys       # troubleshooting: show which keys this program sees
     python voice.py --mic-test   # troubleshooting: record 4 s and show what was heard
 
-Hold VOICE_PTT_KEY (default: right Ctrl) while speaking and release to send.
+Tap VOICE_PTT_KEY (default: right Ctrl) and speak; recording ends by itself
+when you stop talking (or tap again). VOICE_MODE=hold restores hold-to-talk.
 Press VOICE_STOP_KEY (default: F10) to stop a running task between steps.
-Ctrl+C in this window quits.
+Ctrl+C in this window (or closing it) quits.
 
 Like discord_bot.py, this is only another way to call run_task(): the loop,
 the arms, the risk tiers and every confirmation are the same ones
@@ -18,8 +21,9 @@ or "confirm" continues -- silence, anything else, or anything that can't be
 heard declines (fail-closed, same as a typed "n").
 
 Privacy by design (docs/JEV_VOICE_PLAN.md Phase 3):
-- Push-to-talk: the microphone records only while the key is held, and for a
-  few seconds after a spoken confirmation question. Nothing is always-on.
+- Push-to-talk: the microphone records only after the key is tapped (until
+  you stop speaking) or while it's held, and for a few seconds after a
+  spoken confirmation question. Nothing is always-on.
 - Speech-to-text runs locally (faster-whisper). Audio never leaves this
   machine and is never written to disk; only the transcribed sentence goes
   on, as the task text -- exactly as if you'd typed it.
@@ -49,7 +53,19 @@ from typing import Callable
 
 SAMPLE_RATE = 16000
 MIN_SECONDS = 0.3  # shorter than this is a key tap, not speech
-CONFIRM_LISTEN_SECONDS = 5.0
+CONFIRM_LISTEN_SECONDS = 5.0  # how long to wait for an answer to START
+# Tap-to-talk: recording ends after this much quiet following speech, and is
+# dropped if no speech starts within WAIT_FOR_SPEECH_SECONDS.
+SILENCE_TO_END_SECONDS = 1.0
+WAIT_FOR_SPEECH_SECONDS = 6.0
+MAX_RECORDING_SECONDS = 20.0
+# A chunk counts as speech above this peak level, or 3x the quietest chunk
+# heard in a noisy room -- that part capped at NOISY_ROOM_LEVEL, so talking
+# from the very first chunk (quietest = loud) can't read as background.
+# Silence on the user's microphone measured ~0.005.
+MIN_SPEECH_LEVEL = 0.02
+NOISY_ROOM_LEVEL = 0.1
+_EPS = 1e-6  # chunk durations add up in floating point
 MAX_SPOKEN_CHARS = 220  # about 15 seconds of speech
 # Appended to a spoken task so Claude's finish summary is one sentence fit to
 # be read aloud -- the first voice runs read out whole technical summaries
@@ -111,7 +127,7 @@ def make_voice_confirm(
 
     def hear() -> str | None:
         """What was said, "" for nothing, or None if the microphone/model failed."""
-        log(f"  [voice] listening for your yes or no ({seconds:.0f} s, no key needed)...")
+        log("  [voice] listening for your yes or no (no key needed)...")
         try:
             audio = listen(seconds)
             heard = transcribe(audio)
@@ -214,13 +230,29 @@ class Recorder:
         self._chunks: list = []
         self._stream = None
 
-    def start(self) -> None:
+    def start(self, detector: SpeechEndDetector | None = None) -> None:
         self._chunks = []
-        self._stream = self._sd.InputStream(
-            samplerate=SAMPLE_RATE, channels=1, dtype="float32",
-            callback=lambda data, frames, t, status: self._chunks.append(data.copy()),
-        )
+
+        def on_audio(data, frames, t, status):
+            self._chunks.append(data.copy())
+            if detector is not None:
+                detector.add(float(self._np.abs(data).max()) if len(data) else 0.0, frames / SAMPLE_RATE)
+
+        self._stream = self._sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", callback=on_audio)
         self._stream.start()
+
+    def record_until_quiet(self, wait_for_speech: float):
+        """Record until the speaker stops (see SpeechEndDetector), waiting up
+        to `wait_for_speech` seconds for them to begin -- a spoken "yes" is
+        sent about a second after it's said, not after a fixed window."""
+        detector = SpeechEndDetector(wait_for_speech=wait_for_speech)
+        self.start(detector)
+        try:
+            while not detector.done:
+                time.sleep(0.05)
+        finally:
+            audio = self.stop()
+        return audio
 
     def stop(self):
         if self._stream is not None:
@@ -317,6 +349,94 @@ class PushToTalk:
         return events
 
 
+class SpeechEndDetector:
+    """Decides, from each audio chunk's peak level, when a tap-to-talk
+    recording is over: SILENCE_TO_END_SECONDS of quiet after some speech,
+    no speech at all within WAIT_FOR_SPEECH_SECONDS, or MAX_RECORDING_SECONDS.
+    Pure logic; Recorder feeds it from the microphone callback."""
+
+    def __init__(self, silence_to_end: float = SILENCE_TO_END_SECONDS,
+                 wait_for_speech: float = WAIT_FOR_SPEECH_SECONDS, max_seconds: float = MAX_RECORDING_SECONDS,
+                 min_level: float = MIN_SPEECH_LEVEL):
+        self.silence_to_end, self.wait_for_speech = silence_to_end, wait_for_speech
+        self.max_seconds, self.min_level = max_seconds, min_level
+        self.elapsed = 0.0
+        self.quiet_for = 0.0
+        self.heard_speech = False
+        self._floor: float | None = None
+
+    def add(self, peak: float, seconds: float) -> None:
+        self.elapsed += seconds
+        self._floor = peak if self._floor is None else min(self._floor, peak)
+        if peak >= max(self.min_level, min(3 * self._floor, NOISY_ROOM_LEVEL)):
+            self.heard_speech, self.quiet_for = True, 0.0
+        else:
+            self.quiet_for += seconds
+
+    @property
+    def done(self) -> bool:
+        if self.elapsed >= self.max_seconds - _EPS:
+            return True
+        if self.heard_speech:
+            return self.quiet_for >= self.silence_to_end - _EPS
+        return self.elapsed >= self.wait_for_speech - _EPS
+
+
+def talk_key_action(mode: str, event: str, recording: bool) -> str | None:
+    """What a talk-key event means: 'start' or 'send' a recording, or None.
+    tap: each press starts, or sends early if already recording (release is
+    ignored; the recording normally ends by itself). hold: press starts,
+    release sends -- the original push-to-talk."""
+    if mode == "hold":
+        return {"start": "start", "send": "send"}.get(event)
+    if event == "start":
+        return "send" if recording else "start"
+    return None
+
+
+# --- run without a terminal ---------------------------------------------------
+
+AUTOSTART_NAME = "AI Agent voice.cmd"
+
+
+def startup_folder() -> str:
+    """Windows' per-user Startup folder (what Win+R shell:startup opens)."""
+    return os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+
+
+def set_autostart(on: bool, startup_dir: str, project_dir: str) -> str:
+    """Add or remove a small launcher in the Startup folder that runs
+    start_voice.bat, minimized, at every login. Returns what happened."""
+    path = os.path.join(startup_dir, AUTOSTART_NAME)
+    if not on:
+        if os.path.exists(path):
+            os.remove(path)
+            return f"Removed {path} -- the voice assistant no longer starts at login."
+        return "It wasn't set to start at login; nothing to remove."
+    os.makedirs(startup_dir, exist_ok=True)
+    bat = os.path.join(project_dir, "start_voice.bat")
+    with open(path, "w", encoding="utf-8", newline="\r\n") as f:
+        f.write(f'@echo off\nstart "AI Agent voice" /min "{bat}"\n')
+    return f"Created {path} -- the voice assistant will start (minimized) whenever you log in."
+
+
+_instance_lock = None  # keeps the single-instance mutex alive while running
+
+
+def claim_single_instance() -> bool:
+    """False if another voice assistant is already running (Windows named
+    mutex): two copies would both react to the same key and run every task
+    twice -- easy to cause once it also starts at login."""
+    global _instance_lock
+    if sys.platform != "win32":
+        return True
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _instance_lock = kernel32.CreateMutexW(None, False, "Local\\AIBrowserAgentVoice")
+    return ctypes.get_last_error() != 183  # ERROR_ALREADY_EXISTS
+
+
 def _key_is_down():
     """Returns is_down(vk) -> bool, reading the key's live state from Windows."""
     if sys.platform != "win32":
@@ -398,6 +518,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Voice front-end for the agent.")
     parser.add_argument("--keys", action="store_true", help="show which keys the program sees, then exit")
     parser.add_argument("--mic-test", action="store_true", help="record 4 s, show what was heard, then exit")
+    parser.add_argument("--autostart", choices=["on", "off"],
+                        help="start the voice assistant whenever you log in to Windows (on), or stop that (off)")
     args = parser.parse_args()
     # The speech-model download's symlink warning is harmless on Windows (it
     # just uses a bit more disk); keep the startup output readable.
@@ -406,6 +528,9 @@ def main() -> None:
     # libraries loaded first; it works either way, so don't show it every run.
     warnings.filterwarnings("ignore", message="Revert to STA COM threading mode")
 
+    if args.autostart:
+        print(set_autostart(args.autostart == "on", startup_folder(), os.path.dirname(os.path.abspath(__file__))))
+        return
     try:
         if args.keys:
             try:
@@ -433,6 +558,10 @@ def main() -> None:
         for p in problems:
             print(f"  - {p}")
         sys.exit(1)
+    if not claim_single_instance():
+        print("The voice assistant is already running (look for its window on the taskbar). Not starting a second one.")
+        sys.exit(1)
+    mode = config.voice_mode
     try:
         ptt_vk, stop_vk = key_code(config.voice_ptt_key), key_code(config.voice_stop_key)
         is_down = _key_is_down()
@@ -447,17 +576,17 @@ def main() -> None:
         sys.exit(1)
 
     jobs: queue.Queue = queue.Queue()
-    state = {"recording": False, "busy": False}
+    state = {"recording": False, "busy": False, "detector": None}
     ready = threading.Event()
     holder: dict = {}
 
     def worker() -> None:
         speaker = Speaker()  # created on this thread; only ever used from it
         holder["assistant"] = VoiceAssistant(
-            config, transcriber, speaker, recorder.record_for, run_task, quick=build_quick_commands(config),
+            config, transcriber, speaker, recorder.record_until_quiet, run_task, quick=build_quick_commands(config),
         )
         ready.set()
-        speaker(f"Ready. Hold {config.voice_ptt_key} and speak.")
+        speaker(f"Ready. {'Hold' if mode == 'hold' else 'Tap'} {config.voice_ptt_key} and speak.")
         while True:
             audio = jobs.get()
             state["busy"] = True
@@ -475,38 +604,47 @@ def main() -> None:
     def start_recording() -> None:
         if state["busy"]:
             if holder["assistant"].answering.is_set():
-                print("  [voice] (no need to hold the key for yes/no -- just say it)")
+                print("  [voice] (no need to press the key for yes/no -- just say it)")
             else:
                 print("  [voice] still working on the last task -- press the stop key to cancel it.")
             return
+        state["detector"] = SpeechEndDetector() if mode == "tap" else None
         try:
-            recorder.start()
+            recorder.start(state["detector"])
         except Exception as e:  # e.g. no microphone, or it's in use -- say so instead of failing silently
             print(f"  [voice] could not start the microphone: {e}")
             return
         state["recording"] = True
-        print("  [voice] listening...")
+        print("  [voice] listening..." + (" (stops when you stop talking)" if mode == "tap" else ""))
 
     def send_recording() -> None:
         if not state["recording"]:
             return
         state["recording"] = False
         audio = recorder.stop()
+        detector = state["detector"]
+        if detector is not None and not detector.heard_speech:
+            print("  [voice] didn't hear anything -- tap and speak again.")
+            return
         print(f"  [voice] got {len(audio) / SAMPLE_RATE:.1f} s of audio, transcribing...")
         jobs.put(audio)
 
-    print(f"Hold {config.voice_ptt_key} to talk, {config.voice_stop_key} to stop a task, Ctrl+C here to quit.")
+    print(f"{'Hold' if mode == 'hold' else 'Tap'} {config.voice_ptt_key} to talk, {config.voice_stop_key} "
+          "to stop a task, Ctrl+C here (or close this window) to quit.")
     print("  (Nothing happens when you hold the key? Run: python voice.py --keys)")
     ptt = PushToTalk()
     try:
         while True:
             for event in ptt.update(is_down(ptt_vk), is_down(stop_vk)):
-                if event == "start":
+                action = talk_key_action(mode, event, state["recording"])
+                if action == "start":
                     start_recording()
-                elif event == "send":
+                elif action == "send":
                     send_recording()
                 elif event == "stop" and state["busy"]:
                     holder["assistant"].request_stop()
+            if state["recording"] and state["detector"] is not None and state["detector"].done:
+                send_recording()  # tap mode: you stopped talking
             time.sleep(0.02)
     except KeyboardInterrupt:
         print("\nBye.")

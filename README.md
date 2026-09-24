@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 389 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 403 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -468,17 +468,32 @@ pip install faster-whisper sounddevice pyttsx3
 python voice.py
 ```
 
-- **Hold right Ctrl** (`VOICE_PTT_KEY`) while you say a task, e.g. "Open
-  Notepad and type hello world", and release it. The agent runs the task
-  exactly like `python agent.py` would, then **says the result** aloud.
+**No terminal needed:** double-click `start_voice.bat` in the project
+folder (it uses the project's own `.venv`, nothing to activate). To have it
+start by itself, minimized, every time you log in to Windows, run once:
+
+```
+python voice.py --autostart on     # "off" undoes it
+```
+
+Only one copy runs at a time; starting a second one just says it's already
+running.
+
+- **Tap right Ctrl** (`VOICE_PTT_KEY`) and say a task, e.g. "Open Notepad
+  and type hello world". No need to hold the key: recording ends by itself
+  about a second after you stop talking (or tap again to send right away).
+  The agent runs the task exactly like `python agent.py` would, then
+  **says the result** aloud. Prefer holding? Set `VOICE_MODE=hold`.
 - **Press F10** (`VOICE_STOP_KEY`) to stop a running task before its next
-  action. Ctrl+C in the window quits.
+  action. Ctrl+C in the window (or closing it) quits.
 - **Confirmations are spoken.** Before a risky action the agent asks aloud
-  and listens for ~4 seconds. **Only a plain "yes" or "confirm"
-  continues**; silence, "no", "yes please", or anything it can't make out
-  declines, the same as typing `n`.
-- **Privacy:** the microphone records only while the key is held (and for
-  the few seconds after a confirmation question). Speech-to-text runs on
+  and waits up to 5 seconds for you to start answering (and asks once more
+  if it hears nothing); it stops listening as soon as you've finished.
+  **Only a plain "yes" or "confirm" continues**; silence, "no", "yes
+  please", or anything it can't make out declines, the same as typing `n`.
+- **Privacy:** the microphone records only after you tap the key, until you
+  stop speaking (or while it's held, in hold mode), and for the few seconds
+  after a confirmation question. Speech-to-text runs on
   your PC (faster-whisper); audio is never uploaded or saved. Only the
   transcribed sentence becomes the task text.
 - The first run downloads the speech model (`VOICE_WHISPER_MODEL`, default
@@ -597,6 +612,7 @@ each other.
 | `MCP_FILESYSTEM_ROOT` | Required if `ENABLE_MCP_FILESYSTEM=true` -- the one local folder the agent may read from |
 | `MCP_STARTUP_TIMEOUT_S` | How long to wait for an MCP server to start before giving up; default `90` (an npx-launched server can be slow on a cold npm registry round-trip) |
 | `VOICE_PTT_KEY` | Voice: hold this key to talk (default `ctrl_r` = right Ctrl; also `f9`, `alt_gr`, `scroll_lock`, a letter... -- `python voice.py --keys` shows names) |
+| `VOICE_MODE` | Voice: `tap` (default: tap the key and speak, recording ends when you stop talking) or `hold` (hold the key while speaking) |
 | `VOICE_STOP_KEY` | Voice: stops a running task before its next action (default `f10`) |
 | `VOICE_WHISPER_MODEL` | Voice: local speech-to-text model, `tiny.en` / `base.en` (default) / `small.en` |
 | `VOICE_LANGUAGE` | Voice: spoken language code, default `en` (use a multilingual model like `base` for others) |

@@ -109,6 +109,9 @@ class Config:
     # Push-to-talk key (hold while speaking) and the key that stops a running
     # task; names such as ctrl_r, alt_gr, f9, f10 (see voice.VK_CODES).
     voice_ptt_key: str = field(default_factory=lambda: os.getenv("VOICE_PTT_KEY", "ctrl_r"))
+    # tap: tap the key and speak, recording ends when you stop talking.
+    # hold: hold the key while speaking, release to send.
+    voice_mode: str = field(default_factory=lambda: os.getenv("VOICE_MODE", "tap").strip().lower())
     voice_stop_key: str = field(default_factory=lambda: os.getenv("VOICE_STOP_KEY", "f10"))
     # Local speech-to-text model (faster-whisper): tiny.en / base.en / small.en
     # -- bigger is more accurate and slower. Language "en" for English.
@@ -186,6 +189,8 @@ class Config:
                 f"Unknown LLM_PROVIDER '{self.llm_provider}'. Supported: anthropic, openai, deepseek, gemini, "
                 "openrouter, mock."
             )
+        if self.voice_mode not in ("tap", "hold"):
+            problems.append(f"Unknown VOICE_MODE '{self.voice_mode}'. Supported: tap, hold.")
         if self.decider not in ("claude", "hybrid"):
             problems.append(f"Unknown DECIDER '{self.decider}'. Supported: claude, hybrid.")
         if self.decider == "hybrid" and not self.typesafe_api_key:

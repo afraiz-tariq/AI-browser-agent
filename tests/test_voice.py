@@ -5,6 +5,7 @@ download, no network. The hardware classes (Recorder, Transcriber, Speaker)
 are thin wrappers that can only be checked on a real Windows machine.
 """
 import json
+import os
 
 import pytest
 
@@ -216,3 +217,85 @@ def test_a_failed_task_shows_the_full_reason_on_screen():
                                lambda *a, **k: {"success": False, "result": failure}, log=logged.append)
     assistant.handle_audio("audio")
     assert any("529 overloaded" in line for line in logged)
+
+
+# --- tap-to-talk and running without a terminal ------------------------------
+
+from voice import AUTOSTART_NAME, SpeechEndDetector, set_autostart, talk_key_action  # noqa: E402
+
+CHUNK = 0.1  # seconds per fake audio chunk
+
+
+def _feed(detector, peaks):
+    for peak in peaks:
+        if detector.done:
+            break
+        detector.add(peak, CHUNK)
+    return detector
+
+
+def test_a_tap_recording_ends_about_a_second_after_you_stop_talking():
+    quiet, speech = 0.005, 0.2  # the user's mic measured ~0.005 in silence
+    d = _feed(SpeechEndDetector(), [quiet] * 5 + [speech] * 15 + [quiet] * 9)
+    assert d.heard_speech and not d.done  # 0.9 s of quiet: a pause, keep listening
+    _feed(d, [quiet])
+    assert d.done  # 1.0 s of quiet after speech: send it
+
+
+def test_a_pause_mid_sentence_does_not_end_the_recording():
+    d = _feed(SpeechEndDetector(), [0.2] * 10 + [0.005] * 6 + [0.2] * 10 + [0.005] * 5)
+    assert not d.done
+
+
+def test_a_tap_with_no_speech_gives_up_and_says_nothing_was_heard():
+    d = _feed(SpeechEndDetector(wait_for_speech=6.0), [0.005] * 100)
+    assert d.done and not d.heard_speech
+    assert round(d.elapsed, 1) == 6.0
+
+
+def test_a_noisy_room_raises_the_speech_threshold():
+    # Background at 0.03 is above the fixed 0.02 floor, but it's the room,
+    # not you: speech must beat 3x the quietest chunk.
+    d = _feed(SpeechEndDetector(), [0.03, 0.04, 0.05] * 3)
+    assert not d.heard_speech
+    _feed(d, [0.3])
+    assert d.heard_speech
+
+
+def test_a_recording_never_runs_past_the_maximum():
+    d = _feed(SpeechEndDetector(max_seconds=20.0), [0.3] * 300)  # never stops talking
+    assert d.done and round(d.elapsed, 1) == 20.0
+
+
+@pytest.mark.parametrize("mode, event, recording, expected", [
+    ("tap", "start", False, "start"),   # tap: begin
+    ("tap", "start", True, "send"),     # tap again: send now, don't wait for the quiet
+    ("tap", "send", True, None),        # letting go of the key does nothing in tap mode
+    ("hold", "start", False, "start"),
+    ("hold", "send", True, "send"),     # hold mode: release sends, as before
+    ("tap", "stop", False, None),
+])
+def test_what_the_talk_key_does(mode, event, recording, expected):
+    assert talk_key_action(mode, event, recording) == expected
+
+
+def test_autostart_adds_and_removes_a_minimized_launcher(tmp_path):
+    startup = tmp_path / "Startup"
+    message = set_autostart(True, str(startup), r"D:\AI-Agent-latest")
+    launcher = startup / AUTOSTART_NAME
+    assert "will start" in message
+    bat = os.path.join(r"D:\AI-Agent-latest", "start_voice.bat")
+    assert launcher.read_bytes().decode() == f'@echo off\r\nstart "AI Agent voice" /min "{bat}"\r\n'
+
+    assert "Removed" in set_autostart(False, str(startup), r"D:\AI-Agent-latest")
+    assert not launcher.exists()
+    assert "nothing to remove" in set_autostart(False, str(startup), r"D:\AI-Agent-latest")
+
+
+def test_the_launcher_script_runs_voice_with_the_projects_own_python():
+    from pathlib import Path
+
+    bat = (Path(__file__).resolve().parent.parent / "start_voice.bat").read_bytes()
+    assert b"\r\n" in bat  # Windows line endings
+    assert b'".venv\\Scripts\\python.exe" voice.py' in bat
+    assert b'cd /d "%~dp0"' in bat  # works wherever the project folder is

@@ -136,3 +136,12 @@ def test_validate_passes_with_filesystem_enabled_and_a_real_directory(tmp_path):
 def test_validate_does_not_require_a_filesystem_root_when_disabled():
     problems = Config(llm_provider="mock", max_steps=5, enable_mcp_filesystem=False, mcp_filesystem_root="").validate()
     assert problems == []
+
+
+def test_voice_mode_defaults_to_tap_and_rejects_typos(monkeypatch):
+    monkeypatch.delenv("VOICE_MODE", raising=False)
+    assert Config(llm_provider="mock").voice_mode == "tap"
+    monkeypatch.setenv("VOICE_MODE", " Hold ")
+    assert Config(llm_provider="mock").voice_mode == "hold"
+    monkeypatch.setenv("VOICE_MODE", "tapp")
+    assert any("VOICE_MODE" in p for p in Config(llm_provider="mock").validate())

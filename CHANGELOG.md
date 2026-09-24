@@ -14,6 +14,13 @@ full commit message.
 
 ## 2026-09-25
 
+- Less effort to use voice: tap right Ctrl and speak (recording ends about
+  a second after you stop talking; `VOICE_MODE=hold` keeps the old
+  hold-to-talk), spoken yes/no answers end as soon as you've said them,
+  `start_voice.bat` runs it without a terminal or activating `.venv`, and
+  `python voice.py --autostart on` starts it minimized at every login. A
+  second copy refuses to start, so a task never runs twice.
+
 - A voice "search Google for APC" stopped at "Ready to type into
   <textarea> '검색' and submit" and then read silence as a "no". A plain
   search (a GET search form) is now R1, so it no longer asks; the voice
