@@ -14,6 +14,10 @@ full commit message.
 
 ## 2026-09-24
 
+- LLM failures are explained in plain words: out of credit (with where to
+  add it), rejected key, service busy. An empty Anthropic credit balance
+  had been reported as "could not be reached ... check your internet".
+
 - Voice mode now prints a failed task's full explanation on screen; a
   failed LLM call had only been spoken as "could not be reached", hiding
   the actual API error.

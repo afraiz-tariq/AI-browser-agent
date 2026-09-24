@@ -8,6 +8,8 @@ internet access to a real search engine.
 import json
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent import run_task
 from llm import LLMClient, MockProvider
 
@@ -300,3 +302,20 @@ def test_scrolling_lets_the_model_read_past_the_initial_truncation(test_config, 
     assert "SEGMENT-23" not in prompts[1]  # not visible before any scrolling
     assert "SEGMENT-23" in prompts[-1]  # revealed after scrolling down twice
     assert "more text than what's shown" in prompts[1].lower()  # told about the truncation up front
+
+
+@pytest.mark.parametrize("error, headline", [
+    ("Anthropic request failed: Error code: 400 - {'message': 'Your credit balance is too low to access the "
+     "Anthropic API. Please go to Plans & Billing'}", "run out of credit"),
+    ("Anthropic request failed: Error code: 401 - authentication_error invalid x-api-key", "rejected the API key"),
+    ("Anthropic request failed: Error code: 529 - overloaded_error", "busy right now"),
+    ("connection reset", "could not be reached"),
+])
+def test_llm_failures_are_explained_in_plain_words(error, headline):
+    # User's PC: an empty credit balance was reported as "could not be
+    # reached ... check your API key and internet connection".
+    from agent import _explain_llm_error
+
+    message = _explain_llm_error(Exception(error))
+    assert message.startswith("WHAT HAPPENED:") and headline in message.splitlines()[0]
+    assert error in message  # the raw reason is always kept
