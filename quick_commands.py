@@ -24,6 +24,8 @@ Safety, the same rules as the agent's arms:
 - Web addresses are built by code from a fixed site list or a strictly
   validated spoken domain; search queries are URL-encoded spans of what you
   said. Opening a page is what the browser arm's `goto` does (R0).
+- A screenshot is the Windows arm's windows_screenshot (R1): a new PNG in
+  the agent's own output folder, nothing overwritten or sent anywhere.
 - Volume and media keys are classified R0 here, explicitly (the "new
   actions start at R3 until classified in code" rule): they're reversible,
   touch no data, and are what the keyboard's own media keys do.
@@ -77,6 +79,7 @@ VOLUME_STEPS = 5  # each press is ~2% on most systems
 REPLIES = {
     "volume_up": "Volume up.", "volume_down": "Volume down.", "mute": "Muted.",
     "play_pause": "Okay.", "next_track": "Next track.", "previous_track": "Previous track.",
+    "screenshot": "Screenshot saved.",
 }
 
 _DOMAIN = re.compile(r"^(?:www\.)?([a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63})*\.[a-z]{2,24})$")
@@ -84,7 +87,7 @@ _DOMAIN = re.compile(r"^(?:www\.)?([a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63})*\.[a-z]{
 
 @dataclass
 class QuickCommand:
-    kind: str       # open_app | open_url | key
+    kind: str       # open_app | open_url | key | screenshot
     value: str      # exe name, URL, or MEDIA_KEYS name
     reply: str      # what gets said
     source: str     # "phrase" or "jev"
@@ -132,6 +135,11 @@ def match_phrase(text: str, safe_apps: frozenset[str]) -> QuickCommand | None:
     if re.fullmatch(r"(?:previous|last|go back a)(?: track| song| video)", t):
         return QuickCommand("key", "previous_track", REPLIES["previous_track"], "phrase")
 
+    if re.fullmatch(r"(?:take|grab|capture|make|save)(?: a| the)? (?:screenshot|screen shot|screen ?grab|"
+                    r"picture of (?:the|my) screen)s?|(?:screenshot|print screen)(?: (?:the|my) screen)?"
+                    r"|capture(?: the| my)? screen", t):
+        return QuickCommand("screenshot", "full_screen", REPLIES["screenshot"], "phrase")
+
     m = re.fullmatch(r"(?:search|google)(?: on)?(?: (youtube|google|wikipedia))?(?: for)? (.{2,120})", t)
     if m:
         engine = m.group(1) or "google"
@@ -163,6 +171,7 @@ QUICK_KINDS = {
     "play_pause": "Pause, play or resume what is playing.",
     "next_track": "Skip to the next song or video.",
     "previous_track": "Go back to the previous song or video.",
+    "screenshot": "Take a screenshot of the whole screen.",
     "task": "Anything else: more than one step, typing text, reading or finding information, an app or "
             "site not listed, or not a command at all.",
 }
@@ -205,6 +214,8 @@ def jev_route(text: str, jev, safe_apps: frozenset[str], min_confidence: float) 
             return QuickCommand("open_url", SITES[site["choice"]], f"Opening {site['choice']}.", "jev")
     except JevError:
         return None
+    if kind == "screenshot":
+        return QuickCommand("screenshot", "full_screen", REPLIES["screenshot"], "jev")
     return QuickCommand("key", kind, REPLIES[kind], "jev")
 
 
@@ -216,6 +227,7 @@ class QuickCommands:
         self, safe_apps: frozenset[str], launch_app: Callable[[str], None], open_url: Callable[[str], None],
         press_media_key: Callable[[str], None], jev=None, min_confidence: float = 0.8,
         is_safe_launch: Callable[[str], bool] | None = None, log: Callable[[str], None] = print,
+        take_screenshot: Callable[[], str] | None = None,
     ):
         self.safe_apps = safe_apps
         self.launch_app = launch_app
@@ -227,6 +239,9 @@ class QuickCommands:
         # get_dynamic_risk() == "R0"); defaults to the SAFE_APPS membership.
         self.is_safe_launch = is_safe_launch or (lambda exe: exe in safe_apps)
         self.log = log
+        # Saves a full-screen PNG and returns its path (the Windows arm's
+        # windows_screenshot, R1); None -> screenshots go to the full agent.
+        self.take_screenshot = take_screenshot
 
     def route(self, text: str) -> QuickCommand | None:
         command = match_phrase(text, self.safe_apps)
@@ -242,6 +257,10 @@ class QuickCommands:
             if not self.is_safe_launch(command.value):
                 return None  # not an R0 launch -> the full agent, which asks
             self.launch_app(command.value)
+        elif command.kind == "screenshot":
+            if self.take_screenshot is None:
+                return None
+            self.log(f"  [quick] {self.take_screenshot()}")
         elif command.kind == "open_url":
             if not command.value.startswith("https://"):
                 return None

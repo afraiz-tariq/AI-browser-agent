@@ -31,14 +31,14 @@ class _FakeConfig:
         self.confirm_r1_actions = confirm_r1_actions
 
 
-def test_get_tool_specs_returns_eight_actions_with_expected_static_risk_tiers():
+def test_get_tool_specs_returns_nine_actions_with_expected_static_risk_tiers():
     # windows_click_control's static tier is R0 -- its real risk is dynamic
     # (see get_dynamic_risk() tests below), mirroring browser.py's click.
     specs = {s.name: s for s in WindowsToolProvider(WindowsSession()).get_tool_specs()}
     assert set(specs) == {
         "windows_launch_app", "windows_list_windows", "windows_list_controls",
         "windows_click_control", "windows_click_controls", "windows_type_into_control",
-        "windows_read_control_text", "windows_close_window",
+        "windows_read_control_text", "windows_screenshot", "windows_close_window",
     }
     expected_tiers = {
         "windows_launch_app": "R2",
@@ -48,6 +48,7 @@ def test_get_tool_specs_returns_eight_actions_with_expected_static_risk_tiers():
         "windows_click_controls": "R0",  # dynamic, like windows_click_control
         "windows_type_into_control": "R1",
         "windows_read_control_text": "R0",
+        "windows_screenshot": "R1",  # only ever a new file in the agent's own output folder
         "windows_close_window": "R2",
     }
     for name, expected in expected_tiers.items():
@@ -556,3 +557,41 @@ def test_typing_into_a_password_box_never_reads_it_back(monkeypatch):
     session._last_controls["Sign in"] = [box]
     result = session.execute("windows_type_into_control", {"window_title": "Sign in", "index": 0, "text": "x"})
     assert "SECRET" not in result and "Read back" not in result
+
+
+# --- windows_screenshot --------------------------------------------------------
+
+class _FakeImage:
+    def __init__(self):
+        self.saved = []
+
+    def save(self, path):
+        self.saved.append(path)
+        path.write_bytes(b"png")
+
+
+def test_screenshots_get_new_timestamped_files_and_never_overwrite(tmp_path):
+    from datetime import datetime
+
+    now = lambda: datetime(2026, 9, 24, 15, 30, 12)  # noqa: E731 -- same second twice
+    first = windows_tools.save_screenshot(_FakeImage(), tmp_path, now)
+    second = windows_tools.save_screenshot(_FakeImage(), tmp_path, now)
+    assert first.name == "screenshot-20260924-153012.png"
+    assert second.name == "screenshot-20260924-153012-2.png"
+    assert first.read_bytes() == b"png"
+
+
+def test_screenshot_tool_saves_the_whole_screen_by_default(tmp_path, monkeypatch):
+    image = _FakeImage()
+    monkeypatch.setattr(windows_tools, "grab_full_screen", lambda: image)
+    monkeypatch.setattr(windows_tools, "SCREENSHOT_DIR", tmp_path)
+    result = WindowsSession().execute("windows_screenshot", {})
+    assert "the whole screen" in result and str(tmp_path) in result
+    assert len(image.saved) == 1
+
+
+def test_screenshot_is_r1_so_it_never_asks_unless_r1_confirmation_is_on():
+    provider = WindowsToolProvider(WindowsSession())
+    assert provider.get_dynamic_risk("windows_screenshot", {}) is None  # static R1 stands
+    assert requires_confirmation("R1", _FakeConfig(confirm_r1_actions=False)) is False
+    assert requires_confirmation("R1", _FakeConfig(confirm_r1_actions=True)) is True

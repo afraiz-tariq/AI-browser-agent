@@ -14,12 +14,13 @@ from voice import VoiceAssistant
 SAFE = frozenset({"notepad.exe", "calc.exe", "mspaint.exe", "snippingtool.exe", "explorer.exe"})
 
 
-def _quick(jev=None, safe=SAFE, is_safe_launch=None):
+def _quick(jev=None, safe=SAFE, is_safe_launch=None, screenshots=True):
     done = []
     quick = QuickCommands(
         safe, launch_app=lambda exe: done.append(("launch", exe)), open_url=lambda url: done.append(("url", url)),
         press_media_key=lambda key: done.append(("key", key)), jev=jev, is_safe_launch=is_safe_launch,
         log=lambda m: None,
+        take_screenshot=(lambda: done.append(("screenshot",)) or "saved") if screenshots else None,
     )
     return quick, done
 
@@ -42,6 +43,29 @@ def test_common_phrases_run_instantly_without_jev_or_claude(said, expected):
     assert done[0] == expected
 
 
+@pytest.mark.parametrize("said", [
+    "Take a screenshot.", "take screenshots", "screenshot", "capture the screen", "print screen",
+    "grab a screenshot please",
+])
+def test_a_screenshot_is_taken_directly_not_through_the_snipping_tool(said):
+    quick, done = _quick()
+    assert quick.try_handle(said) == "Screenshot saved."
+    assert done == [("screenshot",)]
+
+
+def test_without_a_screenshot_action_the_full_agent_handles_it():
+    # e.g. no Windows arm, or CONFIRM_R1_ACTIONS=true (then the agent asks first)
+    quick, done = _quick(screenshots=False)
+    assert quick.try_handle("take a screenshot") is None
+    assert done == []
+
+
+def test_jev_screenshot_paraphrase():
+    quick, done = _quick(jev=_jev({"kind": "screenshot"}))
+    assert quick.try_handle("snap what's on my monitor") == "Screenshot saved."
+    assert done == [("screenshot",)]
+
+
 def test_volume_moves_a_noticeable_step():
     quick, done = _quick()
     assert quick.try_handle("volume up") == "Volume up."
@@ -54,6 +78,7 @@ def test_volume_moves_a_noticeable_step():
     "open C:\\\\tools\\\\thing.exe",
     "look up the weather in Paris",            # wants an answer read back, not a results page
     "stop",                                    # F10 stops tasks; "stop" must not toggle music
+    "take a screenshot and email it to bob",   # more than one step
     "what's on my calendar today",
     "",
 ])

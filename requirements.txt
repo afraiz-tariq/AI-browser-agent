@@ -31,3 +31,4 @@ discord.py>=2.7,<3.0
 # the same reliability class as Playwright reading the DOM, not blind
 # pixel/coordinate clicking.
 # pywinauto
+# pillow  (only for windows_screenshot / the "take a screenshot" voice command)

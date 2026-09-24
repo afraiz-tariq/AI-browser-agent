@@ -343,11 +343,19 @@ def run_task(
                 len(history) >= 4 and recent4[0] == recent4[2] and recent4[1] == recent4[3]
                 and recent4[0] != recent4[1]
             )
+            # A three-action cycle run twice (A, B, C, A, B, C) is the same
+            # kind of stuck: a voice "take a screenshot" clicked the Snipping
+            # Tool overlay, listed windows, listed controls, and went round
+            # again until MAX_STEPS.
+            recent6 = [h.split(" -> thought:")[0] for h in history[-6:]]
+            oscillating = oscillating or (
+                len(history) >= 6 and recent6[:3] == recent6[3:] and len(set(recent6[:3])) == 3
+            )
             if action != "finish" and (exact_repeat or oscillating):
                 raise TaskCannotBeCompleted(
                     explain(
                         "The agent repeated the same action three times without progress." if exact_repeat
-                        else "The agent is oscillating between two actions without progress.",
+                        else "The agent is oscillating between the same few actions without progress.",
                         "The AI model may be stuck (e.g. the page didn't change as expected, "
                         "or the element index it picked doesn't do what it thinks).",
                         "Try rephrasing the task to be more specific, or increase MAX_STEPS "

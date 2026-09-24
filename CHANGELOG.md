@@ -14,6 +14,14 @@ full commit message.
 
 ## 2026-09-25
 
+- "Take a screenshot" works now. A voice run drove the Snipping Tool and
+  spent all 20 steps on its capture overlay, which waits for a mouse drag
+  the Windows arm can't do. New `windows_screenshot` tool (R1: a new PNG in
+  `output/screenshots/`), a matching voice quick command, and a prompt rule
+  steering the model away from the Snipping Tool. The stuck-loop guard now
+  also stops a three-action cycle repeated twice (that run's
+  click / list windows / list controls loop).
+
 - DeepSeek (`deepseek-flash`) is now the default in `.env.example`, by the
   user's choice after it matched Sonnet on the evals at ~10% of the cost.
   Anthropic stays supported (ARCHITECTURE_DECISIONS.md §2a).

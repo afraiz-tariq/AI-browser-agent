@@ -354,9 +354,10 @@ def build_quick_commands(config):
         provider = WindowsToolProvider(WindowsSession(), safe_apps=safe_apps)
         is_safe = lambda exe: provider.get_dynamic_risk("windows_launch_app", {"path": exe}) == "R0"  # noqa: E731
         launch = lambda exe: provider.session.execute("windows_launch_app", {"path": exe})  # noqa: E731
+        screenshot = lambda: provider.session.execute("windows_screenshot", {})  # noqa: E731
     except Exception:  # noqa: BLE001 -- no Windows arm here: never launch via the shortcut
         safe_apps = frozenset()
-        is_safe, launch = (lambda exe: False), (lambda exe: None)
+        is_safe, launch, screenshot = (lambda exe: False), (lambda exe: None), None
     jev = None
     if config.typesafe_api_key:
         from jev import shared_client
@@ -365,6 +366,7 @@ def build_quick_commands(config):
     return QuickCommands(
         safe_apps, launch_app=launch, open_url=webbrowser.open, press_media_key=windows_media_key,
         jev=jev, min_confidence=config.quick_min_confidence, is_safe_launch=is_safe,
+        take_screenshot=None if config.confirm_r1_actions else screenshot,  # R1: asks when that's on
     )
 
 

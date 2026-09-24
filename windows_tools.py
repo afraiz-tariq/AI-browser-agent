@@ -75,9 +75,12 @@ from __future__ import annotations
 import os
 import re
 import time
-from typing import Any
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Callable
 
 from browser import SENSITIVE_KEYWORDS as BROWSER_SENSITIVE_KEYWORDS
+from config import OUTPUT_DIR
 from errors import TaskCannotBeCompleted, explain
 from secret_fields import HIDDEN
 from tool_provider import RiskLevel, ToolProvider, ToolSpec
@@ -177,6 +180,30 @@ def _escape_for_type_keys(text: str) -> str:
 
 
 # Extends browser.py's SENSITIVE_KEYWORDS (submit/buy/delete/...) with
+SCREENSHOT_DIR = OUTPUT_DIR / "screenshots"
+
+
+def save_screenshot(image, folder: Path = SCREENSHOT_DIR, now: Callable[[], datetime] = datetime.now) -> Path:
+    """Save a PIL image as a NEW timestamped PNG in the agent's own output
+    folder -- never a path the model chose, never overwriting a file."""
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = f"screenshot-{now():%Y%m%d-%H%M%S}"
+    path, n = folder / f"{stem}.png", 2
+    while path.exists():
+        path, n = folder / f"{stem}-{n}.png", n + 1
+    image.save(path)
+    return path
+
+
+def grab_full_screen():
+    """The whole desktop (every monitor) as a PIL image."""
+    try:
+        from PIL import ImageGrab
+    except ImportError as e:
+        raise WindowsAutomationError("Taking a screenshot needs Pillow: run 'pip install pillow'.") from e
+    return ImageGrab.grab(all_screens=True)
+
+
 # Windows-relevant destructive-sounding actions that wouldn't naturally
 # appear in a web page's button text -- used by
 # WindowsToolProvider.get_dynamic_risk() the same way browser.py's
@@ -294,6 +321,26 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
         },
         "required": ["window_title", "index"],
         "risk_level": "R0",
+    },
+    "windows_screenshot": {
+        "description": "Take a screenshot and save it as a PNG file; returns where it was saved. Use this "
+                        "whenever the task asks for a screenshot -- do NOT drive the Snipping Tool for it: its "
+                        "capture overlay needs a mouse drag across the screen, which these tools can't do. "
+                        "Leave window_title out for the whole screen.",
+        "properties": {
+            "window_title": {
+                "type": "string",
+                "description": "Optional: capture only this window -- its EXACT title from windows_list_windows.",
+            },
+        },
+        "required": [],
+        # Classified explicitly (new tools start at R3 until classified): it
+        # only ever creates a NEW file in the agent's own output folder, like
+        # the run records agent.py writes every task -- no path from the
+        # model, nothing overwritten, nothing sent anywhere. So R1: confirms
+        # only if CONFIRM_R1_ACTIONS is on. Asked for after a voice
+        # "take a screenshot" burned MAX_STEPS on the Snipping Tool overlay.
+        "risk_level": "R1",
     },
     "windows_close_window": {
         "description": "Close a window by title.",
@@ -580,6 +627,23 @@ class WindowsSession:
             raise WindowsAutomationError(f"Could not read control #{index} in '{window_title}': {e}") from e
         return f"Control #{index} in '{window_title}' text: {text!r}"
 
+    def _do_windows_screenshot(self, args: dict) -> str:
+        window_title = (args.get("window_title") or "").strip()
+        if window_title:
+            window = self._connect_window(window_title)
+            try:
+                image = window.capture_as_image()
+            except Exception as e:
+                raise WindowsAutomationError(
+                    f"Could not capture '{window_title}' (Pillow installed? 'pip install pillow'): {e}"
+                ) from e
+            what = f"window '{window_title}'"
+        else:
+            image = grab_full_screen()
+            what = "the whole screen"
+        path = save_screenshot(image, SCREENSHOT_DIR)
+        return f"Saved a screenshot of {what} to {path}"
+
     def _do_windows_close_window(self, args: dict) -> str:
         window_title = args["window_title"]
         window = self._connect_window(window_title)
@@ -657,6 +721,8 @@ class WindowsToolProvider(ToolProvider):
             return f"click these controls in order in '{title}': " + ", ".join(repr(label) for label in labels)
         if name == "windows_type_into_control":
             return f"type into control #{args.get('index')} in '{args.get('window_title')}'"
+        if name == "windows_screenshot":
+            return f"save a screenshot of {args.get('window_title') or 'the whole screen'}"
         if name == "windows_close_window":
             return f"close window '{args.get('window_title')}'"
         return super().describe_for_confirmation(name, args)

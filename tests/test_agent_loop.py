@@ -218,7 +218,24 @@ def test_oscillating_between_two_different_actions_is_detected_as_stuck(test_con
     outcome = run_task("Oscillate forever.", test_config, dry_run=True, llm_client=llm_client)
 
     assert outcome["success"] is False
-    assert "oscillating between two actions" in outcome["result"]
+    assert "oscillating between the same few actions" in outcome["result"]
+
+
+def test_a_three_action_cycle_run_twice_is_detected_as_stuck(test_config, fixtures_server):
+    # The voice screenshot run: click, list, list, click, list, list ... until
+    # MAX_STEPS. Neither the exact-repeat nor the A-B-A-B guard sees it.
+    cycle = [
+        _reply("Going to the page.", "goto", {"url": f"{fixtures_server}/index.html"}),
+        _reply("Scrolling down.", "scroll", {"direction": "down"}),
+        _reply("Scrolling up.", "scroll", {"direction": "up"}),
+    ]
+    mock = MockProvider(cycle * 2 + [_reply("Done.", "finish", {"summary": "never reached"})])
+
+    outcome = run_task("Go round in circles.", test_config, dry_run=True, llm_client=LLMClient(mock))
+
+    assert outcome["success"] is False
+    assert "oscillating between the same few actions" in outcome["result"]
+    assert len(mock.calls) == 6
 
 
 def test_repeated_no_effect_actions_get_a_hint_then_eventually_abort(test_config, fixtures_server, capsys):

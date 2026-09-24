@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 363 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 376 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -201,6 +201,7 @@ call for that window -- mirrors the browser arm's `observe()` ->
 - `windows_click_controls(window_title, indices)` -- several clicks in one step, in order (e.g. Calculator 3, +, 2, =); **dynamic** like a single click: R2 if any control in the sequence looks sensitive, else R0.
 - `windows_type_into_control(window_title, index, text)` -- R1. Reports the text read back from the control (never for password boxes) and the window's new title if typing renamed it (e.g. `*hello world - Notepad`).
 - `windows_read_control_text(window_title, index)` -- R0.
+- `windows_screenshot(window_title?)` -- R1. Saves the whole screen (or one window) as a new PNG in `output/screenshots/`; never overwrites, never sent anywhere. Needs `pip install pillow`. The model is told not to use the Snipping Tool: its capture overlay waits for a mouse drag this arm can't do.
 - `windows_close_window(window_title)` -- R2.
 
 Confirmation policy mirrors the browser arm's exactly, not a separate
@@ -369,8 +370,8 @@ above) are off by default; nothing below is needed unless you turn one on.
   no extra pip package for either.
 
 **Optional: the Windows desktop automation arm.** Off by default
-(`ENABLE_WINDOWS_AUTOMATION=false`); Windows-only. `pip install pywinauto`
-to turn it on -- see **Windows desktop automation arm** above.
+(`ENABLE_WINDOWS_AUTOMATION=false`); Windows-only. `pip install pywinauto pillow`
+to turn it on (Pillow is only for screenshots) -- see **Windows desktop automation arm** above.
 
 ## Running
 
@@ -486,7 +487,8 @@ python voice.py
 - **Quick commands run instantly** (well under a second, no full agent run):
   "open notepad" / "open calculator" (apps on `SAFE_APPS`), "go to youtube",
   "open example dot com", "search youtube for lofi beats", "volume up",
-  "mute", "pause", "next track". With `TYPESAFE_API_KEY` set, Jev also
+  "mute", "pause", "next track", "take a screenshot" (saved to
+  `output/screenshots/`). With `TYPESAFE_API_KEY` set, Jev also
   catches other phrasings ("fire up the calculator"), only when it's at
   least `QUICK_MIN_CONFIDENCE` sure. Anything longer ("open notepad and
   type hello"), unsure, or not on the lists runs through the full agent as
