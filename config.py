@@ -73,6 +73,9 @@ class Config:
     # Below this confidence (operation x target), Jev's pick is not used and
     # Claude decides the step instead.
     jev_min_confidence: float = field(default_factory=lambda: _float("JEV_MIN_CONFIDENCE", 0.5))
+    # Stricter floor inside Windows app windows, where Jev can't see the
+    # effect of each click (see jev.JevDecider).
+    jev_min_confidence_windows: float = field(default_factory=lambda: _float("JEV_MIN_CONFIDENCE_WINDOWS", 0.8))
 
     # --- Cost / runaway-loop controls ---
     max_steps: int = field(default_factory=lambda: _int("MAX_STEPS", 20))

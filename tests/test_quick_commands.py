@@ -138,4 +138,4 @@ def test_voice_falls_back_to_the_agent_if_the_shortcut_errors():
                                lambda text, config, **k: runs.append(text) or {"success": True, "result": "ok"},
                                log=lambda m: None, quick=quick)
     assistant.handle_audio("audio")
-    assert runs == ["open notepad"]
+    assert len(runs) == 1 and runs[0].startswith("open notepad")

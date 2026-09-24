@@ -49,7 +49,11 @@ def test_results_are_shortened_for_speech():
     assert short_for_speech("WHAT HAPPENED: Stopped by you.\nWHY: stop key\nWHAT YOU CAN DO: x") == "Stopped by you."
     long = "First sentence here. " * 40
     spoken = short_for_speech(long)
-    assert len(spoken) <= 400 and spoken.endswith(".")
+    assert len(spoken) <= 220 and spoken.endswith(".")
+    # The first voice run read a whole technical summary aloud; now only the
+    # first sentence is spoken.
+    summary = 'Opened the Calculator app and computed 3 + 2. The result is 5 (Expression: "3 + 2=", Display: "5").'
+    assert short_for_speech(summary) == "Opened the Calculator app and computed 3 + 2."
 
 
 class _Fakes:
@@ -74,7 +78,8 @@ def test_a_spoken_task_runs_through_run_task_and_the_result_is_spoken():
     outcome = assistant.handle_audio("audio")
 
     assert outcome["success"] is True
-    assert fakes.runs[0]["text"] == "Open Notepad and type hello."
+    assert fakes.runs[0]["text"].startswith("Open Notepad and type hello.")
+    assert "ONE short, plain sentence" in fakes.runs[0]["text"]  # asks Claude for a speakable summary
     assert fakes.said == ["On it.", "Opened Notepad and typed hello."]
 
 

@@ -231,7 +231,8 @@ def _describe(el) -> str:
 # ~0.3-0.7 s before Claude runs anyway (seen in the 2026-09-24 evals).
 BROWSER_PAGE_ACTIONS = frozenset({"goto", "click", "type", "scroll", "go_back", "wait", "extract"})
 WINDOWS_IN_WINDOW_ACTIONS = frozenset({
-    "windows_list_controls", "windows_click_control", "windows_type_into_control", "windows_read_control_text",
+    "windows_list_controls", "windows_click_control", "windows_click_controls", "windows_type_into_control",
+    "windows_read_control_text",
 })
 
 WINDOWS_OPERATIONS = {
@@ -269,11 +270,19 @@ class JevDecider:
     WindowsSession.last_listing: (window_title, controls) from the latest
     windows_list_controls, or None."""
 
-    def __init__(self, fallback, jev: JevClient, min_confidence: float = 0.5, windows_listing=None):
+    def __init__(self, fallback, jev: JevClient, min_confidence: float = 0.5, windows_listing=None,
+                 windows_min_confidence: float = 0.8):
         self.fallback = fallback
         self.jev = jev
         self.min_confidence = min_confidence
         self.windows_listing = windows_listing
+        # Stricter in app windows: the listing doesn't refresh after each
+        # click, so Jev can't see progress (e.g. Calculator's display) and
+        # loses track of order. On the first voice run it pressed 3 then 2
+        # (skipping +) at 0.59 / 0.61, while every pick at >= 0.92 was right.
+        # Below this, Claude decides -- and can press the whole sequence in
+        # one windows_click_controls step.
+        self.windows_min_confidence = windows_min_confidence
         self.jev_requests = 0
         self.jev_decisions = 0
         self.escalations = 0
@@ -475,7 +484,7 @@ class JevDecider:
         operation, confidence = op_answer["choice"], float(op_answer["confidence"])
         if operation in ("DONE", "OTHER"):
             return f"Jev chose {operation}"
-        if confidence < self.min_confidence:
+        if confidence < self.windows_min_confidence:
             return f"Jev unsure ({operation} at {confidence:.2f})"
         if operation == "REFRESH":
             return self._decision("windows_list_controls", {"window_title": title}, confidence,
@@ -483,7 +492,7 @@ class JevDecider:
         if operation == "CLICK":
             target = validate_choice(answers.get("click_target"), clickable)
             conf = min(confidence, float(target["confidence"]))
-            if conf < self.min_confidence:
+            if conf < self.windows_min_confidence:
                 return f"Jev unsure of the control ({conf:.2f})"
             return self._decision("windows_click_control", {"window_title": title, "index": int(target["choice"])},
                                   conf, f"click {clickable[target['choice']]}")
@@ -492,7 +501,7 @@ class JevDecider:
         if value["choice"] == "none":
             return "Jev found no span of the task to type"
         conf = min(confidence, float(target["confidence"]), float(value["confidence"]))
-        if conf < self.min_confidence:
+        if conf < self.windows_min_confidence:
             return f"Jev unsure what to type where ({conf:.2f})"
         text = candidates[int(value["choice"]) - 1]
         return self._decision(

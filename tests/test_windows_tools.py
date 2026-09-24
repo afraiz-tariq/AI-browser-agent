@@ -31,20 +31,21 @@ class _FakeConfig:
         self.confirm_r1_actions = confirm_r1_actions
 
 
-def test_get_tool_specs_returns_seven_actions_with_expected_static_risk_tiers():
+def test_get_tool_specs_returns_eight_actions_with_expected_static_risk_tiers():
     # windows_click_control's static tier is R0 -- its real risk is dynamic
     # (see get_dynamic_risk() tests below), mirroring browser.py's click.
     specs = {s.name: s for s in WindowsToolProvider(WindowsSession()).get_tool_specs()}
     assert set(specs) == {
         "windows_launch_app", "windows_list_windows", "windows_list_controls",
-        "windows_click_control", "windows_type_into_control", "windows_read_control_text",
-        "windows_close_window",
+        "windows_click_control", "windows_click_controls", "windows_type_into_control",
+        "windows_read_control_text", "windows_close_window",
     }
     expected_tiers = {
         "windows_launch_app": "R2",
         "windows_list_windows": "R0",
         "windows_list_controls": "R0",
         "windows_click_control": "R0",
+        "windows_click_controls": "R0",  # dynamic, like windows_click_control
         "windows_type_into_control": "R1",
         "windows_read_control_text": "R0",
         "windows_close_window": "R2",
@@ -482,3 +483,46 @@ def test_safe_app_list_is_configurable_and_can_be_emptied():
     assert custom.get_dynamic_risk("windows_launch_app", {"path": "notepad.exe"}) is None
     none = WindowsToolProvider(WindowsSession(), safe_apps=frozenset())
     assert none.get_dynamic_risk("windows_launch_app", {"path": "notepad.exe"}) is None
+
+
+# --- windows_click_controls: several clicks in one step ----------------------
+
+def _labelled(text):
+    ctrl = MagicMock()
+    ctrl.window_text.return_value = text
+    return ctrl
+
+
+def test_click_controls_clicks_in_order_in_one_step():
+    session = WindowsSession()
+    keys = [_labelled("Three"), _labelled("Plus"), _labelled("Two"), _labelled("Equals")]
+    session._last_controls["Calculator"] = keys
+    order = []
+    for k in keys:
+        k.invoke.side_effect = lambda k=k: order.append(k.window_text())
+
+    result = session.execute("windows_click_controls", {"window_title": "Calculator", "indices": [0, 1, 2, 3]})
+
+    assert order == ["Three", "Plus", "Two", "Equals"]
+    assert "'Three', #1 'Plus', #2 'Two', #3 'Equals'" in result
+
+
+def test_click_controls_stops_at_the_first_failure_and_says_what_was_done():
+    session = WindowsSession()
+    session._last_controls["Calculator"] = [_labelled("Three"), _labelled("Plus")]
+
+    with pytest.raises(WindowsAutomationError) as e:
+        session.execute("windows_click_controls", {"window_title": "Calculator", "indices": [0, 7, 1]})
+
+    assert "#7" in str(e.value) and "#0 'Three'" in str(e.value)
+    session._last_controls["Calculator"][1].invoke.assert_not_called()  # nothing after the failure
+
+
+def test_click_controls_is_risky_if_any_control_in_the_sequence_is():
+    session = WindowsSession()
+    session._last_controls["App"] = [_labelled("Next"), _labelled("Delete everything")]
+    provider = WindowsToolProvider(session)
+    assert provider.get_dynamic_risk("windows_click_controls", {"window_title": "App", "indices": [0]}) is None
+    assert provider.get_dynamic_risk("windows_click_controls", {"window_title": "App", "indices": [0, 1]}) == "R2"
+    desc = provider.describe_for_confirmation("windows_click_controls", {"window_title": "App", "indices": [0, 1]})
+    assert "'Next'" in desc and "'Delete everything'" in desc

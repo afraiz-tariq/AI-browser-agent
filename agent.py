@@ -212,6 +212,7 @@ def run_task(
                     llm, shared_client(config.typesafe_api_key, config.typesafe_model),
                     min_confidence=config.jev_min_confidence,
                     windows_listing=(lambda: windows_session.last_listing) if windows_session else None,
+                    windows_min_confidence=config.jev_min_confidence_windows,
                 )
 
         for step in range(1, config.max_steps + 1):

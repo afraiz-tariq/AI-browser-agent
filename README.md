@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 335 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 341 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -198,6 +198,7 @@ call for that window -- mirrors the browser arm's `observe()` ->
   reference from before the action can report stale, pre-action text.
 - `windows_click_control(window_title, index)` -- **dynamic**: R2 if the
   target control's own text matches a sensitive-keyword list, R0 otherwise.
+- `windows_click_controls(window_title, indices)` -- several clicks in one step, in order (e.g. Calculator 3, +, 2, =); **dynamic** like a single click: R2 if any control in the sequence looks sensitive, else R0.
 - `windows_type_into_control(window_title, index, text)` -- R1.
 - `windows_read_control_text(window_title, index)` -- R0.
 - `windows_close_window(window_title)` -- R2.
@@ -572,6 +573,7 @@ each other.
 | `DECIDER` | `claude` (default): the LLM above decides every step. `hybrid`: TypeSafe's Jev decides click/type/scroll steps on web pages and click/type/re-list steps in a listed Windows app window (much faster), the LLM above everything else -- see `jev.py` |
 | `TYPESAFE_API_KEY` | Required if `DECIDER=hybrid` -- from https://console.typesafe.ai |
 | `TYPESAFE_MODEL` | Jev model name; default `jev-latest` |
+| `JEV_MIN_CONFIDENCE_WINDOWS` | Same, inside Windows app windows (default `0.8`), where Jev can't see each click's effect |
 | `JEV_MIN_CONFIDENCE` | Below this (default `0.5`) a Jev pick is ignored and the LLM above decides the step |
 | `MAX_STEPS` | Hard cap on observe/decide/act/verify cycles per task (cost control) |
 | `STEP_TIMEOUT_MS` | Playwright timeout per page load/action |

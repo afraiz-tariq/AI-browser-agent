@@ -244,6 +244,28 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
         "required": ["window_title", "index"],
         "risk_level": "R0",
     },
+    "windows_click_controls": {
+        "description": "Click SEVERAL controls of one window in order, in a single step -- e.g. Calculator's "
+                        "keys 3, +, 2, = -- instead of one windows_click_control per step. Indices come from "
+                        "the most recent windows_list_controls for this window. Stops at the first control "
+                        "that can't be clicked and reports how far it got. Call windows_list_controls "
+                        "afterwards to read any result it produced.",
+        "properties": {
+            "window_title": {
+                "type": "string",
+                "description": "The exact window_title used in the most recent windows_list_controls call "
+                                "for this window.",
+            },
+            "indices": {
+                "type": "array", "items": {"type": "integer"}, "minItems": 1, "maxItems": 20,
+                "description": "Control indices to click, in order.",
+            },
+        },
+        "required": ["window_title", "indices"],
+        # Same classification as windows_click_control: R0 unless get_dynamic_risk()
+        # finds a sensitive-looking control anywhere in the sequence (then R2).
+        "risk_level": "R0",
+    },
     "windows_type_into_control": {
         "description": "Type text into a control by index from the most recent windows_list_controls call.",
         "properties": {
@@ -469,6 +491,26 @@ class WindowsSession:
                 raise WindowsAutomationError(f"Could not click control #{index} in '{window_title}': {e}") from e
         return f"Clicked control #{index} in '{window_title}'."
 
+    def _do_windows_click_controls(self, args: dict) -> str:
+        """A sequence of windows_click_control calls in one agent step (the
+        way browser-use batches several actions per model call): one model
+        decision for "3, +, 2, =" instead of four. Stops at the first failure
+        and says which clicks happened, so the model never assumes the rest."""
+        window_title = args["window_title"]
+        indices = [int(i) for i in args["indices"]][:20]
+        clicked: list[str] = []
+        for index in indices:
+            try:
+                self._do_windows_click_control({"window_title": window_title, "index": index})
+            except (WindowsAutomationError, IndexError) as e:
+                done = ", ".join(clicked) or "none"
+                raise WindowsAutomationError(
+                    f"Stopped at control #{index} in '{window_title}' after clicking: {done}. {e}"
+                ) from e
+            label = " ".join(self.get_control_text(window_title, index).split())[:40]
+            clicked.append(f"#{index} '{label}'" if label else f"#{index}")
+        return f"Clicked in order in '{window_title}': {', '.join(clicked)}."
+
     def _do_windows_type_into_control(self, args: dict) -> str:
         window_title = args["window_title"]
         index = int(args["index"])
@@ -581,6 +623,10 @@ class WindowsToolProvider(ToolProvider):
             return f"launch '{args.get('path')}'"
         if name == "windows_click_control":
             return f"click control #{args.get('index')} in '{args.get('window_title')}'"
+        if name == "windows_click_controls":
+            title = args.get("window_title")
+            labels = [self.session.get_control_text(title, int(i)) or f"#{i}" for i in args.get("indices", [])]
+            return f"click these controls in order in '{title}': " + ", ".join(repr(label) for label in labels)
         if name == "windows_type_into_control":
             return f"type into control #{args.get('index')} in '{args.get('window_title')}'"
         if name == "windows_close_window":
@@ -605,6 +651,13 @@ class WindowsToolProvider(ToolProvider):
             if is_bare_name and not (args.get("args") or "").strip() and normalize_app_name(path) in self.safe_apps:
                 return "R0"  # a plain launch of a known harmless app -- see DEFAULT_SAFE_APPS
             return None  # anything else keeps the static R2
+        if name == "windows_click_controls":
+            # Risky if ANY control in the sequence would be risky on its own.
+            window_title = args.get("window_title")
+            for index in args.get("indices") or []:
+                if self.get_dynamic_risk("windows_click_control", {"window_title": window_title, "index": index}):
+                    return "R2"
+            return None
         if name == "windows_click_control":
             window_title = args.get("window_title")
             index = args.get("index")

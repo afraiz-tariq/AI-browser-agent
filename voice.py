@@ -49,7 +49,15 @@ from typing import Callable
 SAMPLE_RATE = 16000
 MIN_SECONDS = 0.3  # shorter than this is a key tap, not speech
 CONFIRM_LISTEN_SECONDS = 4.0
-MAX_SPOKEN_CHARS = 400
+MAX_SPOKEN_CHARS = 220  # about 15 seconds of speech
+# Appended to a spoken task so Claude's finish summary is one sentence fit to
+# be read aloud -- the first voice runs read out whole technical summaries
+# ('... (Expression: "3 + 2=", Display: "5").'). The full task text, hint
+# included, is what the log and output record show.
+SPOKEN_TASK_HINT = (
+    "\n\n(This request was spoken. When you finish, make the summary ONE short, plain sentence that "
+    "can be read aloud, e.g. \"3 plus 2 is 5.\" -- no quotes, brackets or technical details.)"
+)
 
 YES_WORDS = frozenset({"yes", "confirm"})
 
@@ -75,6 +83,9 @@ def short_for_speech(text: str, limit: int = MAX_SPOKEN_CHARS) -> str:
     text = (text or "").strip()
     if text.startswith("WHAT HAPPENED:"):
         text = text.split("\n", 1)[0].removeprefix("WHAT HAPPENED:").strip()
+    first = re.match(r"(.+?[.!?])(?:\s|$)", text)
+    if first and len(first.group(1)) >= 20:
+        text = first.group(1)  # the first sentence carries the answer; details go to the screen, not the ear
     if len(text) <= limit:
         return text
     cut = text[:limit]
@@ -148,7 +159,7 @@ class VoiceAssistant:
         self.say("On it.")
         self.stop_event.clear()
         outcome = self.run(
-            text, self.config, confirm_callback=self.confirm, should_stop=self.stop_event.is_set,
+            text + SPOKEN_TASK_HINT, self.config, confirm_callback=self.confirm, should_stop=self.stop_event.is_set,
         )
         self.say(short_for_speech(outcome.get("result", "")) or ("Done." if outcome.get("success") else "That failed."))
         return outcome

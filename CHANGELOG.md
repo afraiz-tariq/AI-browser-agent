@@ -14,6 +14,13 @@ full commit message.
 
 ## 2026-09-24
 
+- Fixes from the first voice runs (ARCHITECTURE_DECISIONS.md §1, bug 13):
+  the model must now report only what this task itself did (Notepad's
+  restored "Hello World" tab had been claimed as done); new
+  `windows_click_controls` presses a known sequence (3, +, 2, =) in one
+  step; Jev's floor in app windows is 0.8 (its wrong Calculator picks were
+  at ~0.6); spoken replies are one short sentence.
+
 - Voice quick commands (`quick_commands.py`): "open notepad", "go to
   youtube", "search youtube for ...", "volume up", "pause", "next track"
   and similar one-step requests run directly in well under a second

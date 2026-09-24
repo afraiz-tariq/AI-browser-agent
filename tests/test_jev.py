@@ -399,3 +399,22 @@ def test_jev_does_not_pick_from_a_listing_of_a_different_window():
     elsewhere = ["windows_click_control {'window_title': 'Untitled - Notepad', 'index': 2} -> thought: Click."]
     assert decider.decide_next_action("Compute 7 + 3.", elsewhere, None)["decider"] == "claude"
     assert scripted.requests == []
+
+
+def test_windows_picks_below_the_stricter_floor_go_to_claude():
+    # 2026-09-24 voice run: Jev pressed "Two" right after "Three" (skipping
+    # "+") at 0.61 in Calculator. In app windows the floor is 0.8.
+    decider, mock = _windows_decider(ScriptedJev({"operation": "CLICK", "click_target": "2", "_conf": 0.61}),
+                                     [CLAUDE_FINISH])
+    decision = decider.decide_next_action("Compute 3 plus 2.", LISTED, None)
+    assert decision["decider"] == "claude" and "unsure" in decision["escalation_reason"]
+
+    confident, _ = _windows_decider(ScriptedJev({"operation": "CLICK", "click_target": "0", "_conf": 0.95}))
+    assert confident.decide_next_action("Compute 3 plus 2.", LISTED, None)["decider"] == "jev"
+
+
+def test_a_batch_click_counts_as_being_inside_the_window():
+    scripted = ScriptedJev({"operation": "REFRESH", "_conf": 0.95})
+    decider, _ = _windows_decider(scripted)
+    batch = ["windows_click_controls {'window_title': 'Calculator', 'indices': [0, 1, 2, 3]} -> thought: 3+2=."]
+    assert decider.decide_next_action("Compute 3 plus 2.", batch, None)["action"] == "windows_list_controls"

@@ -69,6 +69,16 @@ Rules:
   excel_save when all edits for the task are done, or they're lost.
 - Prefer the simplest path to the goal. Do not repeat an action that already
   failed or had no visible effect -- try something different instead.
+- Only report as done what THIS task's ACTION HISTORY shows you did and then
+  checked. Content that was already there before you acted does not count:
+  Windows 11 Notepad, for example, reopens earlier tabs, so a document
+  already showing the requested text may be left over from a previous run.
+  If the task asks you to type, open, click or change something, do it
+  yourself (in a new, empty document or tab if an old one is showing),
+  then verify it, before calling finish.
+- To press several controls of one window in a known order (e.g.
+  Calculator keys 3, +, 2, =), use windows_click_controls once rather than
+  one click per step.
 - If a webpage shows a login form, a "sign in to continue" wall, a CAPTCHA,
   or 2FA/MFA prompt, call login_required immediately. Never try to guess
   credentials, solve a CAPTCHA, or bypass MFA.
