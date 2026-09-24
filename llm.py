@@ -170,32 +170,81 @@ class BaseLLMProvider(ABC):
         """Send one turn and return {"action": ..., "thought": ..., "args": {...}}."""
 
 
+# Providers reachable through the OpenAI SDK's Chat Completions API: the
+# cheaper models the similar projects use (Rocky: DeepSeek; jev-ultrafast:
+# OpenRouter; both tested Gemini Flash-Lite). LLM_PROVIDER -> (default base
+# URL, Config attribute holding that provider's key). OPENAI_BASE_URL
+# overrides the URL for any of them, e.g. a local LM Studio / Ollama server.
+OPENAI_COMPATIBLE = {
+    "openai": (None, "openai_api_key"),
+    "deepseek": ("https://api.deepseek.com", "deepseek_api_key"),
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai/", "gemini_api_key"),
+    "openrouter": ("https://openrouter.ai/api/v1", "openrouter_api_key"),
+}
+
+# Request settings some providers or models reject (GPT-5 models accept only
+# the default temperature; not every provider supports forced tool choice).
+# If a 400 names one of these, it's dropped for the rest of the task and the
+# request retried once -- the model still must call a tool (the system
+# prompt says so, and a reply without one is an LLMError as before).
+_DROPPABLE = {"temperature": "temperature", "tool_choice": "tool_choice", "thinking": "extra_body"}
+
+
 class OpenAIProvider(BaseLLMProvider):
-    def __init__(self, api_key: str, model: str, tool_specs: list[ToolSpec], max_retries: int = 2):
+    def __init__(self, api_key: str, model: str, tool_specs: list[ToolSpec], max_retries: int = 2,
+                 base_url: str | None = None):
         super().__init__()
         from openai import OpenAI  # imported lazily so `mock`/tests don't need the package configured
 
-        self._client = OpenAI(api_key=api_key, max_retries=max_retries)
+        self._client = OpenAI(api_key=api_key, max_retries=max_retries, base_url=base_url or None)
         self._model = model
         self._tools = _openai_tools(tool_specs)
+        self._settings: dict[str, Any] = {"tool_choice": "required", "temperature": 0}
+        if base_url and "api.deepseek.com" in base_url:
+            # DeepSeek's thinking mode adds output tokens and seconds to every
+            # step; a pick-one-tool decision doesn't need it (Rocky and
+            # jev-ultrafast turn it off the same way).
+            self._settings["extra_body"] = {"thinking": {"type": "disabled"}}
+
+    def _rejected_setting(self, error: Exception) -> str | None:
+        if getattr(error, "status_code", None) != 400:
+            return None
+        message = str(error).lower()
+        for word, key in _DROPPABLE.items():
+            if word in message and key in self._settings:
+                return key
+        return None
 
     def decide(self, system: str, user: str) -> dict[str, Any]:
-        try:
-            response = self._client.chat.completions.create(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                tools=self._tools,
-                tool_choice="required",
-                temperature=0,
-            )
-        except Exception as e:  # network errors, auth errors, rate limits, etc.
-            raise LLMError(f"OpenAI request failed: {e}") from e
+        while True:
+            try:
+                response = self._client.chat.completions.create(
+                    model=self._model,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    tools=self._tools,
+                    **self._settings,
+                )
+                break
+            except Exception as e:  # network errors, auth errors, rate limits, etc.
+                rejected = self._rejected_setting(e)
+                if rejected is None:
+                    raise LLMError(f"OpenAI request failed: {e}") from e
+                self._settings.pop(rejected)  # then retry without it; each setting can only be dropped once
 
         if response.usage is not None:
-            self._record_usage(response.usage.prompt_tokens, response.usage.completion_tokens)
+            usage = response.usage
+            # Cached prompt tokens, as OpenAI/Gemini (prompt_tokens_details)
+            # or DeepSeek (prompt_cache_hit_tokens) report them. Recorded like
+            # Anthropic's: input_tokens = the uncached part, so costs compare
+            # fairly across providers in the output record and eval report.
+            cached = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", None)
+            if not isinstance(cached, int):
+                cached = getattr(usage, "prompt_cache_hit_tokens", 0)
+            cached = cached if isinstance(cached, int) else 0
+            self._record_usage((usage.prompt_tokens or 0) - cached, usage.completion_tokens, cached, 0)
 
         tool_calls = response.choices[0].message.tool_calls or []
         if not tool_calls:
@@ -296,9 +345,13 @@ class LLMClient:
 
     @classmethod
     def from_config(cls, config, tool_specs: list[ToolSpec], extra_system_facts: str = "") -> "LLMClient":
-        if config.llm_provider == "openai":
+        if config.llm_provider in OPENAI_COMPATIBLE:
+            default_url, key_attr = OPENAI_COMPATIBLE[config.llm_provider]
             return cls(
-                OpenAIProvider(config.openai_api_key, config.llm_model, tool_specs, config.llm_max_retries),
+                OpenAIProvider(
+                    getattr(config, key_attr), config.llm_model, tool_specs, config.llm_max_retries,
+                    base_url=getattr(config, "openai_base_url", "") or default_url,
+                ),
                 extra_system_facts,
             )
         if config.llm_provider == "anthropic":
@@ -314,10 +367,10 @@ class LLMClient:
         """Token usage accumulated across every decide() call made through
         this client so far this task. All zeros (ZERO_USAGE) for MockProvider
         -- no real tokens were spent, which is the honest answer, not a
-        missing one. On Anthropic, the prompt's full size is input_tokens +
-        cache_read_input_tokens + cache_creation_input_tokens; the two cache
-        fields stay 0 on OpenAI, whose prompt_tokens already include cached
-        tokens."""
+        missing one. The prompt's full size is input_tokens +
+        cache_read_input_tokens + cache_creation_input_tokens on every
+        provider: OpenAI-compatible ones report their cached prompt tokens as
+        cache reads, the uncached rest as input."""
         return {
             "input_tokens": self._provider.total_input_tokens,
             "output_tokens": self._provider.total_output_tokens,

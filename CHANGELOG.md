@@ -14,6 +14,13 @@ full commit message.
 
 ## 2026-09-24
 
+- Cheaper LLM providers: `LLM_PROVIDER=deepseek`, `gemini` or `openrouter`
+  (plus `OPENAI_BASE_URL` for any OpenAI-compatible server), via the
+  existing OpenAI provider. A setting a model rejects (e.g. GPT-5's
+  temperature) is dropped and the request retried; DeepSeek's thinking mode
+  is off; cached tokens are counted the same way for every provider. README
+  "Cost awareness" has the measured per-step cost comparison.
+
 - LLM failures are explained in plain words: out of credit (with where to
   add it), rejected key, service busy. An empty Anthropic credit balance
   had been reported as "could not be reached ... check your internet".

@@ -88,3 +88,10 @@ def test_task_logger_never_writes_a_secret_to_disk(tmp_path):
     assert OPENAI_STYLE_KEY not in on_disk
     assert ANTHROPIC_STYLE_KEY not in on_disk
     assert on_disk.count("[REDACTED]") >= 5  # one per secret occurrence above
+
+
+def test_google_api_keys_are_redacted(tmp_path):
+    # Gemini keys (AIza...) don't match the sk- pattern.
+    from logger import _redact
+
+    assert "AIzaSyD" not in _redact("key AIzaSyD4f8kJ2mQ9xR7tL1vB3nC6pW0eZ5hU8aY")

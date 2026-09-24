@@ -319,3 +319,11 @@ def test_llm_failures_are_explained_in_plain_words(error, headline):
     message = _explain_llm_error(Exception(error))
     assert message.startswith("WHAT HAPPENED:") and headline in message.splitlines()[0]
     assert error in message  # the raw reason is always kept
+
+
+def test_request_id_digits_do_not_change_the_explanation():
+    from agent import _explain_llm_error
+
+    msg = _explain_llm_error(Exception("Error code: 500 - server error, request_id req_4291529402"))
+    assert "could not be reached" in msg.splitlines()[0]
+    assert "run out of credit" in _explain_llm_error(Exception("Error code: 402 - Insufficient Balance"))

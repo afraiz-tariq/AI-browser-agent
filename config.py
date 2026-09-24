@@ -55,6 +55,13 @@ class Config:
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gpt-4o-mini"))
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
+    # Cheaper OpenAI-compatible providers (llm.OPENAI_COMPATIBLE): set
+    # LLM_PROVIDER=deepseek / gemini / openrouter plus that provider's key.
+    deepseek_api_key: str = field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", ""))
+    gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    openrouter_api_key: str = field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY", ""))
+    # Overrides the provider's address, e.g. http://localhost:1234/v1 for LM Studio.
+    openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", ""))
     # How many times the OpenAI/Anthropic SDK retries a request itself
     # (connection errors, timeouts, 429s, 5xx) before giving up and raising
     # -- passed straight to the SDK client, which already implements
@@ -167,9 +174,17 @@ class Config:
             problems.append(
                 "ANTHROPIC_API_KEY is not set. Copy .env.example to .env and add your key."
             )
-        if self.llm_provider not in ("openai", "anthropic", "mock"):
+        for provider, key_name, value in (
+            ("deepseek", "DEEPSEEK_API_KEY", self.deepseek_api_key),
+            ("gemini", "GEMINI_API_KEY", self.gemini_api_key),
+            ("openrouter", "OPENROUTER_API_KEY", self.openrouter_api_key),
+        ):
+            if self.llm_provider == provider and not value:
+                problems.append(f"LLM_PROVIDER={provider} needs {key_name} in .env.")
+        if self.llm_provider not in ("openai", "anthropic", "mock", "deepseek", "gemini", "openrouter"):
             problems.append(
-                f"Unknown LLM_PROVIDER '{self.llm_provider}'. Supported: openai, anthropic, mock."
+                f"Unknown LLM_PROVIDER '{self.llm_provider}'. Supported: anthropic, openai, deepseek, gemini, "
+                "openrouter, mock."
             )
         if self.decider not in ("claude", "hybrid"):
             problems.append(f"Unknown DECIDER '{self.decider}'. Supported: claude, hybrid.")

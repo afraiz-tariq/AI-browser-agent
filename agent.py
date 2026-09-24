@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import statistics
 import time
@@ -510,23 +511,28 @@ def _explain_llm_error(error: Exception) -> str:
     user's PC: an exhausted API credit balance was reported as "could not be
     reached... check your API key and internet connection", which sent them
     looking in the wrong place -- and in voice mode only that headline is
-    spoken."""
+    spoken. Matches the SDKs' "Error code: NNN" status, not stray digits
+    (request ids contain numbers too)."""
     text = str(error)
     lowered = text.lower()
-    if "credit balance" in lowered or "billing" in lowered or "insufficient_quota" in lowered:
+    status = re.search(r"error code: (\d{3})", lowered)
+    code = status.group(1) if status else ""
+    if code == "402" or any(s in lowered for s in (
+            "credit balance", "billing", "insufficient_quota", "insufficient balance")):
         return explain(
             "Your AI provider account has run out of credit.",
             text,
             "Add credit in your provider's billing settings (Anthropic: console.anthropic.com, Settings > "
-            "Billing), then try again. Voice quick commands keep working meanwhile.",
+            "Billing; DeepSeek: platform.deepseek.com; OpenAI: platform.openai.com), then try again. Voice "
+            "quick commands keep working meanwhile.",
         )
-    if "authentication" in lowered or "invalid x-api-key" in lowered or "401" in lowered:
+    if code in ("401", "403") or "authentication" in lowered or "invalid x-api-key" in lowered:
         return explain(
             "Your AI provider rejected the API key.",
             text,
-            "Check ANTHROPIC_API_KEY / OPENAI_API_KEY in .env (no extra spaces or quotes).",
+            "Check the API key for your LLM_PROVIDER in .env (no extra spaces or quotes).",
         )
-    if "overloaded" in lowered or "529" in lowered or "rate_limit" in lowered or "429" in lowered:
+    if code in ("429", "529") or "overloaded" in lowered or "rate_limit" in lowered:
         return explain(
             "The AI service is busy right now.",
             text,

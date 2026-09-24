@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 348 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 359 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -567,9 +567,11 @@ each other.
 
 | Variable | Purpose |
 |---|---|
-| `LLM_PROVIDER` | `anthropic`, `openai`, or `mock` (mock is for tests only) |
+| `LLM_PROVIDER` | `anthropic`, `openai`, `deepseek`, `gemini`, `openrouter`, or `mock` (mock is for tests only) |
 | `LLM_MODEL` | Model name for that provider, e.g. `claude-sonnet-5` |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Your API key, never hard-coded |
+| `DEEPSEEK_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` | Key for `LLM_PROVIDER=deepseek` / `gemini` / `openrouter` (cheaper models; needs `pip install openai`) |
+| `OPENAI_BASE_URL` | Optional: another OpenAI-compatible address, e.g. a local LM Studio server |
 | `DECIDER` | `claude` (default): the LLM above decides every step. `hybrid`: TypeSafe's Jev decides click/type/scroll steps on web pages and click/type/re-list steps in a listed Windows app window (much faster), the LLM above everything else -- see `jev.py` |
 | `TYPESAFE_API_KEY` | Required if `DECIDER=hybrid` -- from https://console.typesafe.ai |
 | `TYPESAFE_MODEL` | Jev model name; default `jev-latest` |
@@ -652,6 +654,27 @@ models later -- nothing else in the code references a specific provider.
   question is never skipped just because the request came in remotely.
 
 ## Cost awareness
+
+**Choosing a cheaper model.** Measured on this agent (2026-09-24 evals): a
+Claude step sends ~6,600 tokens, ~84% of them cached, and gets ~100 back.
+At September 2026 list prices that's roughly, per step:
+
+| `LLM_PROVIDER` / `LLM_MODEL` | Per step | vs. Sonnet 5 |
+|---|---|---|
+| `anthropic` / `claude-sonnet-5` (default) | ~$0.0042 | 100% |
+| `anthropic` / `claude-haiku-4-5` | ~$0.0021 | 50% (but failed 2/9 evals and took more steps) |
+| `openai` / `gpt-5-mini` | ~$0.0006 + its thinking tokens | ~15-30% |
+| `gemini` / `gemini-3.1-flash-lite-preview` | ~$0.0006 | ~13% |
+| `deepseek` / `deepseek-v4.1-flash` | ~$0.0005 (half off-peak) | ~6-11% |
+
+Cheaper models tend to take more steps or fail more, so compare them on the
+eval suite before switching: `python evals/run_evals.py --save
+evals/results/<model>.json` and keep the one that passes everything at the
+lowest real cost. Privacy: whichever provider you pick receives the task and
+the page/window text on every step it decides (secret fields are masked);
+DeepSeek's servers are in China. `DECIDER=hybrid` already moves click/type
+steps to Jev (~$0.0002 per step), so the cheaper model only replaces the
+steps the LLM still decides.
 
 - `MAX_STEPS` hard-caps how many LLM calls a single task can make.
 - Only a compact, text-only observation (not a screenshot, not full HTML)
