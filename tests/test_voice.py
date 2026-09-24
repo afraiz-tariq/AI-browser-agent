@@ -37,6 +37,27 @@ def test_confirm_asks_aloud_then_listens_and_only_yes_continues():
     assert no("Continue?") is False
 
 
+def test_silence_gets_asked_once_more_instead_of_counting_as_no():
+    # The first voice search declined on '' although the user never said no.
+    said = []
+    answers = iter(["", "Yes."])
+    confirm = make_voice_confirm(lambda s: "audio", lambda a: next(answers), said.append, log=lambda m: None)
+    assert confirm("Ready to type into <textarea> and submit. Continue?") is True
+    assert said[1] == "I didn't hear an answer. Say yes or no."
+
+
+def test_silence_twice_still_declines_and_a_no_is_not_asked_again():
+    said = []
+    confirm = make_voice_confirm(lambda s: "audio", lambda a: "", said.append, log=lambda m: None)
+    assert confirm("Continue?") is False
+    assert len(said) == 2
+
+    said.clear()
+    confirm = make_voice_confirm(lambda s: "audio", lambda a: "No.", said.append, log=lambda m: None)
+    assert confirm("Continue?") is False
+    assert len(said) == 1  # a real answer is final
+
+
 def test_confirm_declines_if_the_microphone_or_model_fails():
     def broken(_seconds):
         raise OSError("no microphone")

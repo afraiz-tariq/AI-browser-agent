@@ -49,7 +49,7 @@ from typing import Callable
 
 SAMPLE_RATE = 16000
 MIN_SECONDS = 0.3  # shorter than this is a key tap, not speech
-CONFIRM_LISTEN_SECONDS = 4.0
+CONFIRM_LISTEN_SECONDS = 5.0
 MAX_SPOKEN_CHARS = 220  # about 15 seconds of speech
 # Appended to a spoken task so Claude's finish summary is one sentence fit to
 # be read aloud -- the first voice runs read out whole technical summaries
@@ -94,20 +94,44 @@ def short_for_speech(text: str, limit: int = MAX_SPOKEN_CHARS) -> str:
     return (cut[: end + 1] if end > limit // 3 else cut.rstrip() + "...")
 
 
+def _loudness(audio) -> str:
+    try:
+        return f"{float(abs(audio).max()):.3f}; near 0.000 means the microphone picked up nothing"
+    except Exception:  # noqa: BLE001 -- only a hint for the log
+        return "unknown"
+
+
 def make_voice_confirm(
     listen: Callable[[float], object], transcribe: Callable[[object], str], say: Callable[[str], None],
     log: Callable[[str], None] = print, seconds: float = CONFIRM_LISTEN_SECONDS,
 ) -> Callable[[str], bool]:
     """A run_task() confirm_callback that asks aloud and listens for the
-    answer. Any failure to hear or understand declines."""
+    answer. Silence gets one second chance; anything but a plain yes, or any
+    failure to hear, declines."""
+
+    def hear() -> str | None:
+        """What was said, "" for nothing, or None if the microphone/model failed."""
+        log(f"  [voice] listening for your yes or no ({seconds:.0f} s, no key needed)...")
+        try:
+            audio = listen(seconds)
+            heard = transcribe(audio)
+        except Exception as e:  # a microphone or model error must never mean "yes"
+            log(f"  [voice] could not hear an answer ({type(e).__name__}); treating it as no.")
+            return None
+        if not heard.strip():
+            log(f"  [voice] heard nothing (loudest sample {_loudness(audio)})")
+        return heard
 
     def confirm(prompt: str) -> bool:
         say(f"{prompt} Say yes or no.")
-        log(f"  [voice] listening for your yes or no ({seconds:.0f} s, no key needed)...")
-        try:
-            heard = transcribe(listen(seconds))
-        except Exception as e:  # a microphone or model error must never mean "yes"
-            log(f"  [voice] could not hear an answer ({type(e).__name__}); treating it as no.")
+        heard = hear()
+        if heard is not None and not heard.strip():
+            # Silence is not a "no" -- the first voice search stopped here
+            # although the user never said no. Ask once more; still silent
+            # (or anything but a plain yes) declines, as before.
+            say("I didn't hear an answer. Say yes or no.")
+            heard = hear()
+        if heard is None:
             return False
         answer = is_yes(heard)
         log(f"  [voice] heard {heard!r} -> {'yes' if answer else 'no'}")

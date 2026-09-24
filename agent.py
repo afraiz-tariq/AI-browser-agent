@@ -609,8 +609,9 @@ def _dispatch_action(
         if not confirm(f"Ready to {desc}. Continue?"):
             raise TaskCannotBeCompleted(
                 explain(
-                    "User declined a sensitive action.",
-                    f"{desc[0].upper()}{desc[1:]} was flagged for confirmation and declined.",
+                    "A sensitive action was not confirmed, so it was not done.",
+                    f"{desc[0].upper()}{desc[1:]} was flagged for confirmation and declined "
+                    "(the answer was no, or no clear yes was heard).",
                     "Re-run the task and confirm the action if it was actually intended.",
                 )
             )

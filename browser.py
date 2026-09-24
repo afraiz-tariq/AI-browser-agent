@@ -149,6 +149,24 @@ class Observation:
     total_text_length: int
 
 
+# See BrowserSession.is_search_submit(). Google's box is a <textarea
+# name="q"> in <form role="search" action="/search"> (GET); YouTube's is
+# name="search_query" in action="/results"; Wikipedia's is type="search".
+_SEARCH_SUBMIT_JS = r"""el => {
+  const form = el.form || el.closest('form');
+  if (!form || !['input', 'textarea'].includes(el.tagName.toLowerCase())) return false;
+  if ((form.getAttribute('method') || 'get').toLowerCase() !== 'get') return false;
+  if (form.querySelector('input[type=password], input[type=file], [formmethod]:not([formmethod=get i])')) return false;
+  const name = (el.getAttribute('name') || '').toLowerCase();
+  const action = (form.getAttribute('action') || '').toLowerCase();
+  return (el.getAttribute('type') || '').toLowerCase() === 'search'
+    || (el.getAttribute('role') || '').toLowerCase() === 'searchbox'
+    || !!el.closest('[role=search], search')
+    || /search|results/.test(action)
+    || ['q', 'query', 'search', 'search_query', 'keywords'].includes(name);
+}"""
+
+
 class BrowserSession:
     """Owns the Playwright/Chrome lifecycle for one agent run."""
 
@@ -173,7 +191,10 @@ class BrowserSession:
 
     def start(self) -> None:
         self._playwright = sync_playwright().start()
-        launch_kwargs = {"headless": self.config.headless}
+        # Chrome's "Translate this page?" bubble sits outside the page (the
+        # agent never sees it), but a translated page would change the text
+        # under the agent's feet -- and it's clutter on a voice run.
+        launch_kwargs = {"headless": self.config.headless, "args": ["--disable-features=Translate"]}
         if self.config.chrome_executable_path:
             launch_kwargs["executable_path"] = self.config.chrome_executable_path
         else:
@@ -380,6 +401,18 @@ class BrowserSession:
             return True
         return is_secret_label(attrs.get("aria"), attrs.get("placeholder"), attrs.get("name"), attrs.get("id"))
 
+    def is_search_submit(self, index: int) -> bool:
+        """Whether typing into this element and pressing Enter is just a
+        search: a search box in a form that submits with GET (so the result
+        is a plain URL, the same thing `goto` opens without asking), with no
+        password/file field and no button overriding the method to POST."""
+        if not (0 <= index < len(self._last_elements)):
+            return False
+        try:
+            return bool(self._last_elements[index].evaluate(_SEARCH_SUBMIT_JS))
+        except Exception:
+            return False  # can't tell -> not a search, so it keeps asking
+
     def is_sensitive(self, index: int) -> bool:
         summary = self.element_summary(index).lower()
         return any(keyword in summary for keyword in SENSITIVE_KEYWORDS)
@@ -517,7 +550,13 @@ class BrowserToolProvider(ToolProvider):
         elif name == "type" and args.get("submit"):
             # Confirmed whenever a form is actually being submitted,
             # regardless of whether the target element's own text looks
-            # sensitive -- matches the original behavior this replaces.
+            # sensitive -- except a plain search (is_search_submit(): a GET
+            # search form, whose result is just a URL `goto` could open
+            # without asking). That's R1, asked only with CONFIRM_R1_ACTIONS.
+            # Added after a voice "search Google for APC" stopped to ask.
+            index = args.get("index")
+            if index is not None and self.session.is_search_submit(int(index)):
+                return "R1"
             return "R2"
         return None
 

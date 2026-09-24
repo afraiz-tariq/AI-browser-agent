@@ -13,7 +13,7 @@ Update whichever of those three a change actually touches, in the same commit �
 Don't touch these without an explicit ask, and flag it clearly if a task seems to require it:
 
 - Never bypass a login/CAPTCHA/MFA/rate-limit wall. The agent stops and hands control back.
-- Risk tiers (`tool_provider.py`): **R1** confirms only if `CONFIRM_R1_ACTIONS` is explicitly turned on (default off). **R2** (disk writes, form submits, `excel_save`) confirms by default via `CONFIRM_SENSITIVE_ACTIONS` (default true) — that flag genuinely gates it, don't assume it's ignored. **R3** (sensitive/destructive/unclassified) always confirms, unconditionally, regardless of any flag — this is fail-closed by design, not a toggle to relax.
+- Risk tiers (`tool_provider.py`): **R1** confirms only if `CONFIRM_R1_ACTIONS` is explicitly turned on (default off). **R2** (disk writes, form submits, `excel_save`; a GET search-box submit is R1, see `BrowserSession.is_search_submit`) confirms by default via `CONFIRM_SENSITIVE_ACTIONS` (default true) — that flag genuinely gates it, don't assume it's ignored. **R3** (sensitive/destructive/unclassified) always confirms, unconditionally, regardless of any flag — this is fail-closed by design, not a toggle to relax.
 - A new tool (native arm or MCP) defaults to **R3 (always confirm)** until explicitly risk-classified in code. Never inherit an MCP server's own idea of its tool's risk.
 - No secret (API key, cookie, session token) ever reaches a log file. `logger.py` redacts as defense in depth, but don't add a new log call that writes a raw credential and rely on redaction to catch it.
 - `tests/` stays fully offline (mock LLM, local fixtures) — no real network/API calls added there. Anything that needs a real LLM belongs in `evals/`.

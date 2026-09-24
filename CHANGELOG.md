@@ -14,6 +14,13 @@ full commit message.
 
 ## 2026-09-25
 
+- A voice "search Google for APC" stopped at "Ready to type into
+  <textarea> '검색' and submit" and then read silence as a "no". A plain
+  search (a GET search form) is now R1, so it no longer asks; the voice
+  confirm asks once more on silence (listening 5 s, not 4) instead of
+  declining, and the failure message no longer claims "User declined".
+  Chrome's translate pop-up is turned off.
+
 - "Take a screenshot" works now. A voice run drove the Snipping Tool and
   spent all 20 steps on its capture overlay, which waits for a mouse drag
   the Windows arm can't do. New `windows_screenshot` tool (R1: a new PNG in

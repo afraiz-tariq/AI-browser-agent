@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 376 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 386 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -626,7 +626,12 @@ models later -- nothing else in the code references a specific provider.
   ```
   Ready to click <button 'Submit'>. This looks like it may have side effects. Continue? [y/n]
   ```
-  Declining stops the task immediately with an explanation.
+  Declining stops the task immediately with an explanation. One exception:
+  a plain search (typing into a search box of a form that submits with GET,
+  like Google's, YouTube's or Wikipedia's) doesn't ask -- its result is just
+  a URL the agent could open anyway. It asks again if `CONFIRM_R1_ACTIONS=true`.
+  By voice, silence gets one "I didn't hear an answer" retry; only a plain
+  "yes" continues.
 - `excel_save` gets the same treatment -- it's the only Excel action that
   touches disk (reads and `excel_write_cell` only change the in-memory
   workbook), so it always asks before overwriting a real file:

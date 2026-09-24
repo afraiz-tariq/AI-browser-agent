@@ -3,6 +3,8 @@ Tests for browser.py against the local fixture site (no real internet
 needed). Verifies the pieces the agent loop depends on: navigation,
 DOM observation, typing+submit, login-wall detection.
 """
+import pytest
+
 from browser import BrowserSession
 
 
@@ -370,5 +372,46 @@ def test_labels_come_from_label_elements_and_aria_labelledby(test_config, fixtur
         session.goto(f"{fixtures_server}/labels.html")
         texts = [el.text for el in session.observe().elements]
         assert texts == ["Wrapped label", "Label via for", "Named by aria-labelledby", "Aria wins"]
+    finally:
+        session.stop()
+
+
+# --- a plain search submit doesn't ask ---------------------------------------
+
+@pytest.mark.parametrize("label, is_search", [
+    ("검색", True),                  # Google: <textarea name=q> in <form role=search action=/search>
+    ("Wiki search", True),           # type=search in a GET form
+    ("Post search", False),          # POST: submitting may change something
+    ("Comment box", False),          # a GET form, but nothing says "search"
+    ("Override search", False),      # a button switches the form to POST
+    ("Search with password", False), # a form holding a password is never "just a search"
+    ("Loose box", False),            # no form: Enter runs unknown page code
+])
+def test_search_submits_are_told_apart_from_other_form_submits(test_config, fixtures_server, label, is_search):
+    from browser import BrowserToolProvider
+
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/search_forms.html")
+        obs = session.observe()
+        index = next(el.index for el in obs.elements if label in session.element_summary(el.index))
+        assert session.is_search_submit(index) is is_search
+        risk = BrowserToolProvider(session).get_dynamic_risk("type", {"index": index, "text": "APC", "submit": True})
+        assert risk == ("R1" if is_search else "R2")
+        # Without submit, typing stays unconfirmed either way.
+        assert BrowserToolProvider(session).get_dynamic_risk("type", {"index": index, "text": "APC"}) is None
+    finally:
+        session.stop()
+
+
+def test_the_fixture_search_engine_counts_as_a_search(test_config, fixtures_server):
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/index.html")
+        obs = session.observe()
+        box = next(el.index for el in obs.elements if el.tag == "input")
+        assert session.is_search_submit(box) is True
     finally:
         session.stop()
