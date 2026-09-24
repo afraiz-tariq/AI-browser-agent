@@ -132,6 +132,31 @@ Claude runs anyway; and pages with no clickable elements (the long-page
 task) skip Jev entirely, even for plain scrolling. One run each, so treat
 single-task differences as indicative, not settled.
 
+## Hybrid run 2: Jev in Windows apps too, 2026-09-24
+
+After Phase 4 (Jev for Windows app windows) and the routing polish. Raw:
+`results/2026-09-24-hybrid-jev-sonnet-5-run2.json`. Seconds per task:
+
+| Task | claude | hybrid 1 | hybrid 2 |
+|---|---|---|---|
+| Calculator 7 + 3 (Windows app) | 24.5 | 24.8 | **13.3** |
+| Settings toggles (clicks) | failed, 37.4 | 12.3 | **8.5** |
+| Trip wizard (clicks) | 17.9 | 11.1 | **7.9** |
+| Long page (scrolling) | 13.1 | 13.8 | **7.8** |
+| Search + extract | 18.3 | 15.7 | 13.0 |
+| Mixed browser then Excel | 17.7 | 17.4 | 13.6 |
+| **All 11 tasks** | 169 s, 10/11 | 138 s, 11/11 | **101 s, 11/11** |
+| Steps decided by Jev / Claude | 0 / 54 | 11 / 36 | **18 / 28** |
+| Cost | ~$0.22 | ~$0.14 | ~$0.11 |
+
+In Calculator, Jev pressed 7, +, 3, = and re-read the display (~0.25 s
+each) and Claude did the rest. Jev now also does the long-page scrolling. Tasks
+Jev doesn't touch (Excel, login wall) moved by ±1-2 s between runs: that's
+run-to-run noise (Claude latency, Chrome start-up), not a change. The first
+Jev call on each new screen is still ~0.6-0.77 s even with the shared
+connection, so it isn't connection setup as first guessed; it looks like
+TypeSafe's side (a new screen's state vs. an unchanged prefix).
+
 ## Page-reading speed (free, offline)
 
 ```

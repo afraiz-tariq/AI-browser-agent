@@ -14,6 +14,10 @@ full commit message.
 
 ## 2026-09-24
 
+- Second live hybrid run (Jev in Windows apps too): 11/11 passed, whole
+  suite 101 s vs 169 s Claude-only; Calculator 24.5 s -> 13.3 s. See
+  `evals/README.md`.
+
 - Added the voice front-end (`python voice.py`): hold right Ctrl to speak a
   task, local speech-to-text (faster-whisper, audio never leaves the PC),
   results spoken via Windows SAPI, spoken confirmations where only a plain

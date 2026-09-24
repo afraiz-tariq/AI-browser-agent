@@ -171,6 +171,8 @@ Each phase ends with `pytest tests/ -q` green and, where marked, a real-run chec
 - `WindowsSession.last_listing` records the latest `windows_list_controls` result as data, at no extra UIA cost. It's cleared on launch, and on closing that window.
 - `JevDecider` uses it when the last action was inside that window. The operations are CLICK, TYPE_TEXT (a span of the task, never into a password box), REFRESH (re-list, not twice in a row), DONE and OTHER, always with the listing's exact window title (bug 10).
 - Launching, switching and closing windows, and reading results, stay with Claude.
+- **Measured live 2026-09-24 (hybrid run 2):** Calculator 24.5 s → 13.3 s. Jev did 4 clicks and a re-read. The whole suite went 169 s → 101 s with 11/11 passing, against Claude-only's 10/11. Table in `evals/README.md`.
+- The shared connection didn't remove the ~0.6–0.77 s first Jev call per screen, so it isn't connection setup. It's left as is.
 - Also done from the Phase 1 follow-ups:
   - Jev is only asked when the last action was on a page or in a listed window.
   - Jev can scroll pages that have no controls.
