@@ -194,6 +194,15 @@ def run_task(
                 "folders like OneDrive Desktop won't match a guess and will fail with a permission or not-found " \
                 "error):\n" + "\n".join(f"- {label}: {path}" for label, path in known_folders.items())
             llm = LLMClient.from_config(config, tool_specs, facts)
+            if config.decider == "hybrid":
+                # Jev picks browser click/type/scroll steps; the Claude client
+                # just built decides everything else. See jev.py.
+                from jev import JevClient, JevDecider
+
+                llm = JevDecider(
+                    llm, JevClient(config.typesafe_api_key, config.typesafe_model),
+                    min_confidence=config.jev_min_confidence,
+                )
 
         for step in range(1, config.max_steps + 1):
             steps_taken = step
@@ -300,6 +309,10 @@ def run_task(
 
             action = decision.get("action", "")
             timing["action"] = action
+            if "decider" in decision:  # only set by jev.JevDecider (DECIDER=hybrid)
+                timing["decider"] = decision["decider"]
+                if decision.get("escalation_reason"):
+                    logger.note(f"Claude decided this step: {decision['escalation_reason']}")
             args = decision.get("args", {}) or {}
             thought = decision.get("thought", "")
             current_url = observation.url if observation is not None else "(no browser page open)"
@@ -457,6 +470,8 @@ def run_task(
     finally:
         session.stop()
         excel_session.close()
+        if hasattr(llm, "close"):
+            llm.close()
         for provider in mcp_providers:
             provider.close()
 

@@ -74,6 +74,12 @@ _ATTRS_JS_BODY = """
         tag, role: attr('role'), type: attr('type'), aria: attr('aria-label'), placeholder: attr('placeholder'),
         inner: el.innerText || '', valueAttr: attr('value'), name: attr('name'), id: attr('id'),
         autocomplete: attr('autocomplete'), checked: !!el.checked,
+        // The text of an associated <label> (wrapping or for=id), and of any
+        // aria-labelledby targets -- how most real checkboxes, radios and
+        // fields are named. Without these a wrapped checkbox read as ''.
+        labelText: el.labels && el.labels.length ? el.labels[0].innerText || '' : '',
+        labelledBy: (attr('aria-labelledby') || '').split(/\\s+/).filter(Boolean)
+            .map(id => (document.getElementById(id) || {}).innerText || '').join(' '),
         value: (tag === 'input' || tag === 'select' || tag === 'textarea') ? String(el.value ?? '') : '',
     };
 """
@@ -273,8 +279,10 @@ class BrowserSession:
             secret = self._is_secret_field(tag, input_type, item)
             label = (
                 item["aria"]
+                or item["labelledBy"]
                 or item["placeholder"]
                 or item["inner"]
+                or item["labelText"]
                 # A secret field's value never stands in for its label --
                 # the label is sent to the model (see secret_fields.py).
                 or (None if secret else item["valueAttr"])
@@ -346,6 +354,7 @@ class BrowserSession:
                 label = (
                     item["inner"]
                     or item["aria"]
+                    or item["labelText"]
                     # value is what names an <input type=submit value="Delete">,
                     # but in a secret field it's the secret itself.
                     or (None if secret else item["valueAttr"])

@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html>
+<head><title>Labels</title></head>
+<body>
+  <label><input type="checkbox"> Wrapped label</label>
+  <label for="byfor">Label via for</label><input type="text" id="byfor" value="typed">
+  <span id="lb">Named by aria-labelledby</span><input type="text" aria-labelledby="lb">
+  <input type="text" aria-label="Aria wins" id="both"><label for="both">Loses to aria-label</label>
+</body>
+</html>

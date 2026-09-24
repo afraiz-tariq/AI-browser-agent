@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head><title>Trip planner</title></head>
+<body>
+  <h1>Trip planner</h1>
+  <section id="step1">
+    <h2>Step 1 of 3: Choose a destination</h2>
+    <button data-city="LIS">Lisbon</button>
+    <button data-city="OSL">Oslo</button>
+    <button data-city="ROM">Rome</button>
+    <p id="picked-city">No destination selected.</p>
+    <button id="next1">Next</button>
+  </section>
+  <section id="step2" style="display:none">
+    <h2>Step 2 of 3: How many nights?</h2>
+    <button data-nights="2">2 nights</button>
+    <button data-nights="3">3 nights</button>
+    <button data-nights="5">5 nights</button>
+    <p id="picked-nights">No length selected.</p>
+    <button id="next2">Next</button>
+  </section>
+  <section id="step3" style="display:none">
+    <h2>Step 3 of 3: Summary</h2>
+    <p id="summary"></p>
+  </section>
+  <script>
+    let city = '', cityName = '', nights = '';
+    const show = (n) => ['step1', 'step2', 'step3'].forEach((id, i) =>
+      document.getElementById(id).style.display = (i + 1 === n) ? '' : 'none');
+    document.querySelectorAll('[data-city]').forEach(b => b.addEventListener('click', () => {
+      city = b.dataset.city; cityName = b.textContent;
+      document.getElementById('picked-city').textContent = 'Selected destination: ' + cityName;
+    }));
+    document.querySelectorAll('[data-nights]').forEach(b => b.addEventListener('click', () => {
+      nights = b.dataset.nights;
+      document.getElementById('picked-nights').textContent = 'Selected: ' + nights + ' nights';
+    }));
+    document.getElementById('next1').addEventListener('click', () => { if (city) show(2); });
+    document.getElementById('next2').addEventListener('click', () => {
+      if (!nights) return;
+      document.getElementById('summary').textContent =
+        'Your trip: ' + cityName + ', ' + nights + ' nights. Reference: TRIP-' + city + '-' + nights;
+      show(3);
+    });
+  </script>
+</body>
+</html>

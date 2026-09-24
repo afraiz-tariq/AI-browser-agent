@@ -8,7 +8,7 @@ project is developed in -- there's no live API key there -- which is why
 this file refuses to run against LLM_PROVIDER=mock rather than silently
 producing meaningless "passes."
 
-What this is for: tests/*.py (229 tests) drive the agent loop with
+What this is for: tests/*.py (259 tests) drive the agent loop with
 MockProvider -- scripted replies -- to prove the *mechanism* is correct
 (dispatch, risk gating, verify, pagination, ...). None of them ever ask a
 real model to reason its way through a task. This suite does exactly
@@ -135,6 +135,14 @@ def speed_summary(results: list[EvalResult]) -> dict:
         "output_tokens": sum(r.token_usage.get("output_tokens", 0) for r in ran),
         "cache_read_input_tokens": sum(r.token_usage.get("cache_read_input_tokens", 0) for r in ran),
         "cache_creation_input_tokens": sum(r.token_usage.get("cache_creation_input_tokens", 0) for r in ran),
+        # DECIDER=hybrid only (jev.py): who decided each step, and how fast.
+        "jev_decisions": sum(r.token_usage.get("jev_decisions", 0) for r in ran),
+        "claude_escalations": sum(r.token_usage.get("claude_escalations", 0) for r in ran),
+        "jev_input_tokens": sum(r.token_usage.get("jev_input_tokens", 0) for r in ran),
+        "median_decide_ms_jev_steps": med([s["decide_ms"] for r in ran for s in r.timings.get("steps", [])
+                                           if s.get("decider") == "jev" and "decide_ms" in s]),
+        "median_decide_ms_claude_steps": med([s["decide_ms"] for r in ran for s in r.timings.get("steps", [])
+                                              if s.get("decider") == "claude" and "decide_ms" in s]),
     }
 
 
@@ -168,6 +176,10 @@ def _print_report(results: list[EvalResult]) -> int:
     speed = speed_summary(results)
     print(f"Prompt cache: {speed['cache_read_input_tokens']} tokens read from cache (~0.1x price), "
           f"{speed['cache_creation_input_tokens']} written (~1.25x).")
+    if speed["jev_decisions"] or speed["claude_escalations"]:
+        print(f"Jev decided {speed['jev_decisions']} steps (median {speed['median_decide_ms_jev_steps']} ms); "
+              f"Claude decided {speed['claude_escalations']} (median {speed['median_decide_ms_claude_steps']} ms, "
+              f"incl. the Jev call first when Jev was asked).")
     print(f"Median per step: decide {speed['median_decide_ms']} ms, observe {speed['median_observe_ms']} ms, "
           f"act {speed['median_act_ms']} ms. Median per task: {speed['median_steps_per_task']} steps, "
           f"{speed['median_seconds_per_task']} s.")
@@ -184,6 +196,7 @@ def save_results(results: list[EvalResult], config, path: Path) -> None:
         "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "llm_provider": config.llm_provider,
         "llm_model": config.llm_model,
+        "decider": getattr(config, "decider", "claude"),
         "summary": speed_summary(results),
         "tasks": [dataclasses.asdict(r) for r in results],
     }

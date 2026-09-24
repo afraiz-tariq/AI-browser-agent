@@ -358,3 +358,17 @@ def test_typing_into_a_password_field_still_changes_its_masked_state(test_config
         assert "SECRET" not in after.state_fingerprint
     finally:
         session.stop()
+
+
+def test_labels_come_from_label_elements_and_aria_labelledby(test_config, fixtures_server):
+    # Most real checkboxes and fields are named by a <label> (wrapping or
+    # for=id) or aria-labelledby, not their own attributes. Before this, a
+    # wrapped checkbox read as '' -- the model couldn't tell which was which.
+    session = BrowserSession(test_config)
+    session.start()
+    try:
+        session.goto(f"{fixtures_server}/labels.html")
+        texts = [el.text for el in session.observe().elements]
+        assert texts == ["Wrapped label", "Label via for", "Named by aria-labelledby", "Aria wins"]
+    finally:
+        session.stop()

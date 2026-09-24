@@ -39,6 +39,14 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _float(name: str, default: float) -> float:
+    val = os.getenv(name)
+    try:
+        return float(val) if val else default
+    except ValueError:
+        return default
+
+
 @dataclass
 class Config:
     # --- LLM provider (kept provider-agnostic so the model can be swapped
@@ -53,6 +61,18 @@ class Config:
     # backoff/jitter correctly. 2 matches both SDKs' own default, so this
     # is a no-op unless someone opts into a higher value via .env.
     llm_max_retries: int = field(default_factory=lambda: _int("LLM_MAX_RETRIES", 2))
+
+    # --- Optional faster decider for browser steps (jev.py) ---
+    # "claude" (default): every step is decided by the LLM above, as always.
+    # "hybrid": TypeSafe's Jev picks click/type/scroll steps from the page's
+    # own elements; everything else (and anything Jev is unsure of) still
+    # goes to the LLM above. See docs/JEV_VOICE_PLAN.md.
+    decider: str = field(default_factory=lambda: os.getenv("DECIDER", "claude").strip().lower())
+    typesafe_api_key: str = field(default_factory=lambda: os.getenv("TYPESAFE_API_KEY", ""))
+    typesafe_model: str = field(default_factory=lambda: os.getenv("TYPESAFE_MODEL", "jev-latest"))
+    # Below this confidence (operation x target), Jev's pick is not used and
+    # Claude decides the step instead.
+    jev_min_confidence: float = field(default_factory=lambda: _float("JEV_MIN_CONFIDENCE", 0.5))
 
     # --- Cost / runaway-loop controls ---
     max_steps: int = field(default_factory=lambda: _int("MAX_STEPS", 20))
@@ -127,6 +147,15 @@ class Config:
             problems.append(
                 f"Unknown LLM_PROVIDER '{self.llm_provider}'. Supported: openai, anthropic, mock."
             )
+        if self.decider not in ("claude", "hybrid"):
+            problems.append(f"Unknown DECIDER '{self.decider}'. Supported: claude, hybrid.")
+        if self.decider == "hybrid" and not self.typesafe_api_key:
+            problems.append(
+                "DECIDER=hybrid needs TYPESAFE_API_KEY (from console.typesafe.ai) in .env, "
+                "or set DECIDER=claude."
+            )
+        if not 0 <= self.jev_min_confidence <= 1:
+            problems.append("JEV_MIN_CONFIDENCE must be between 0 and 1.")
         if self.max_steps < 1:
             problems.append("MAX_STEPS must be at least 1.")
         if self.enable_mcp_brave_search and not self.brave_api_key:

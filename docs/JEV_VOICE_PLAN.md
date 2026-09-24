@@ -125,6 +125,13 @@ Each phase ends with `pytest tests/ -q` green and, where marked, a real-run chec
 - `tests/`: a `MockJev` with scripted answers (fully offline), covering: invalid choice rejected, wrong head ignored, low confidence escalates, a `DONE` claim escalates to the check, and a risk-tier confirmation still fires on a Jev-chosen submit click.
 - **Exit:** the fixture evals pass with `DECIDER=hybrid`, and the Phase 0 table gets a hybrid column.
 
+**Status 2026-09-24:** built, offline-tested, not yet run live.
+- `jev.py`: `JevClient` (retries, key only in the auth header, never in errors), `validate_choice`, and `JevDecider`. The operations are CLICK, TYPE_TEXT (offered only when the task contains a quotable span and a non-secret editable field exists), SCROLL_DOWN (only when the page has more text), SCROLL_UP, DONE and OTHER, with target heads for click/type plus a submit yes/no.
+- Escalates to Claude on: no page or no elements; a login-looking page; DONE (Claude checks and writes the summary); OTHER; confidence below `JEV_MIN_CONFIDENCE`; an invalid answer; or TypeSafe being unreachable.
+- Deviation from the plan above: TYPE_TEXT uses only spans of the task (Rocky's select-not-generate) and never calls a Claude writer. If no span fits, the whole step goes to Claude. That's simpler, and the writer can be added later if evals show many type escalations.
+- Found and fixed along the way: `observe()` gave wrapped checkboxes an empty label.
+- Next: run `evals/run_evals.py` twice on the user's PC (`DECIDER=claude`, then `DECIDER=hybrid`) with the two new click-heavy tasks included, and compare.
+
 ### Phase 2: writer, DONE check, safety adoptions
 - `writer.py`: span-first, then Claude (Haiku by default) with a strict JSON reply: one `text` key, 1–200 characters, no control characters. Never fills fields labelled password/PIN/card/CVV/SSN/token.
 - Claude `DONE` check writes the `finish` summary, keeping bug 2's guarantee (a summary with real content).

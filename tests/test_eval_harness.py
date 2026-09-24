@@ -114,3 +114,52 @@ def test_timings_are_read_back_and_summarized(test_config, tmp_path):
     saved = json.loads(out.read_text(encoding="utf-8"))
     assert saved["summary"] == summary
     assert saved["tasks"][0]["task_id"] == TASK_EXCEL_WRITE_ROUNDTRIP.id
+
+
+def _run_click_task(task, replies, test_config, tmp_path, fixtures_server):
+    """Returns (result, the prompt the model saw before its final step) --
+    the latter proves what the page really showed after the scripted clicks."""
+    mock = MockProvider(replies)
+    result = run_single_eval(task, test_config, tmp_path, fixtures_server=fixtures_server, llm_client=LLMClient(mock))
+    return result, mock.calls[-1][1]
+
+
+def test_settings_toggles_fixture_scores_the_real_checkbox_states(test_config, tmp_path, fixtures_server):
+    # The page's code comes from the checkboxes' real states when Apply is
+    # pressed, so the check can't be passed by the summary alone.
+    from evals.tasks import TASK_SETTINGS_TOGGLES
+
+    url = f"{fixtures_server}/settings_toggles.html"
+    right, page = _run_click_task(TASK_SETTINGS_TOGGLES, [
+        _reply("Open.", "goto", {"url": url}),
+        _reply("Dark on.", "click", {"index": 0}),
+        _reply("Email off.", "click", {"index": 1}),
+        _reply("Compact on.", "click", {"index": 2}),
+        _reply("Apply.", "click", {"index": 4}),
+        _reply("Done.", "finish", {"summary": "The page says: Confirmation code: D1-E0-C1-S1"}),
+    ], test_config, tmp_path, fixtures_server)
+    assert right.passed is True
+    assert "Confirmation code: D1-E0-C1-S1" in page
+
+    wrong, page = _run_click_task(TASK_SETTINGS_TOGGLES, [
+        _reply("Open.", "goto", {"url": url}),
+        _reply("Apply.", "click", {"index": 4}),
+        _reply("Done.", "finish", {"summary": "The page says: Confirmation code: D0-E1-C0-S1"}),
+    ], test_config, tmp_path, fixtures_server)
+    assert wrong.passed is False
+    assert "Confirmation code: D0-E1-C0-S1" in page
+
+
+def test_trip_wizard_fixture_walks_three_steps(test_config, tmp_path, fixtures_server):
+    from evals.tasks import TASK_TRIP_WIZARD
+
+    result, page = _run_click_task(TASK_TRIP_WIZARD, [
+        _reply("Open.", "goto", {"url": f"{fixtures_server}/trip_wizard.html"}),
+        _reply("Lisbon.", "click", {"index": 0}),
+        _reply("Next.", "click", {"index": 3}),
+        _reply("3 nights.", "click", {"index": 1}),  # step 2 is now the only visible section
+        _reply("Next.", "click", {"index": 3}),
+        _reply("Done.", "finish", {"summary": "Your trip: Lisbon, 3 nights. Reference: TRIP-LIS-3"}),
+    ], test_config, tmp_path, fixtures_server)
+    assert result.passed is True
+    assert "Reference: TRIP-LIS-3" in page

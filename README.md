@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 229 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 259 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -303,6 +303,7 @@ ai_browser_agent/
 ├── errors.py           # Shared TaskCannotBeCompleted exception + explain() formatter
 ├── secret_fields.py    # Which form fields hold secrets, so both arms mask their values before the LLM sees them
 ├── llm.py             # Provider-agnostic LLM client (OpenAI / Anthropic / mock); builds tools from ToolSpecs
+├── jev.py             # Optional TypeSafe Jev decider for browser steps (DECIDER=hybrid), Claude as fallback
 ├── logger.py           # Per-task plain-text logging (with secret redaction)
 ├── config.py           # Loads and validates .env settings
 ├── requirements.txt
@@ -516,6 +517,10 @@ each other.
 | `LLM_PROVIDER` | `anthropic`, `openai`, or `mock` (mock is for tests only) |
 | `LLM_MODEL` | Model name for that provider, e.g. `claude-sonnet-5` |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Your API key, never hard-coded |
+| `DECIDER` | `claude` (default): the LLM above decides every step. `hybrid`: TypeSafe's Jev decides browser click/type/scroll steps (much faster), the LLM above everything else -- see `jev.py` |
+| `TYPESAFE_API_KEY` | Required if `DECIDER=hybrid` -- from https://console.typesafe.ai |
+| `TYPESAFE_MODEL` | Jev model name; default `jev-latest` |
+| `JEV_MIN_CONFIDENCE` | Below this (default `0.5`) a Jev pick is ignored and the LLM above decides the step |
 | `MAX_STEPS` | Hard cap on observe/decide/act/verify cycles per task (cost control) |
 | `STEP_TIMEOUT_MS` | Playwright timeout per page load/action |
 | `MAX_DOM_CHARS` | How much page text is sent to the LLM per step (cost control) |
@@ -569,6 +574,13 @@ models later -- nothing else in the code references a specific provider.
   Windows, UI Automation's own `IsPassword` flag masks a control in
   `windows_list_controls` and blocks `windows_read_control_text` on it. See
   `secret_fields.py`.
+- With `DECIDER=hybrid`, browser steps are also sent to TypeSafe (task,
+  page URL/title/visible text, element labels -- the same data the LLM
+  sees, secret fields already masked). Jev only *chooses* among the page's
+  own elements; every choice goes through the same risk tiers and `[y/n]`
+  confirmations as the LLM's, and anything Jev is unsure of, or can't
+  express (a URL, Excel values, a login page, the final answer), is decided
+  by the LLM instead.
 - No password, API key, cookie, or session token is ever written to a log
   file (`logger.py` also redacts anything that looks like a secret as a
   defense in depth).

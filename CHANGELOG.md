@@ -14,6 +14,20 @@ full commit message.
 
 ## 2026-09-24
 
+- Added the optional TypeSafe Jev decider (`jev.py`, `DECIDER=hybrid`, off by
+  default): Jev picks browser click / type / scroll steps from the page's own
+  elements in one request; Claude decides everything else and any step Jev
+  is unsure of, can't express, or can't reach. Text to type is only ever a
+  span of the user's own task. Jev choices go through the same risk tiers
+  and confirmations. 27 offline tests with TypeSafe simulated. Not yet run
+  against the live API.
+- `observe()` now names elements by their `<label>` / `aria-labelledby`
+  text: wrapped checkboxes previously read as `''`, so neither model could
+  tell them apart.
+- Two click-heavy eval tasks (`browser_settings_toggles`,
+  `browser_trip_wizard`) whose pages emit a code from the real control
+  states, for a fair claude-vs-hybrid comparison.
+
 - Recorded the first live speed/cost baseline (claude-sonnet-5, user's PC):
   9/9 evals passed; median step = 2.3 s Claude decision + 53 ms page read +
   21 ms action; prompt cache served 84% of prompt tokens; ~$0.15 for the
