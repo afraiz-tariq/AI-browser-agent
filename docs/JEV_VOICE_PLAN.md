@@ -111,6 +111,11 @@ Each phase ends with `pytest tests/ -q` green and, where marked, a real-run chec
 - Rewrite `browser.py` `observe()` to read all elements in **one** `page.evaluate()` call, keeping the same `Observation` shape and `ElementInfo` fields so every existing test passes unchanged. This is jev-ultrafast's biggest measured win, and it speeds up the Claude path too.
 - **Exit:** a baseline table in `evals/README.md`; the snapshot rewrite passes all browser tests plus the local fixture evals.
 
+**Status 2026-09-24:**
+- Done: per-step timing in every output record; `run_evals.py --save`.
+- Done: the one-call snapshot. `evals/bench_observe.py` measured 41–59× faster page reads (200 elements: 4.35 s → 74 ms; 500 elements: 10.8 s → 0.21 s), and the old and new output was checked identical on every fixture. This mattered more than expected: before it, reading a typical 200–500 element page cost **4–11 s per step** in this container, likely more than the Claude call itself. Jev's speed advantage should be re-judged against the *new* numbers, not the old ones.
+- Remaining: the live Claude baseline (`python evals/run_evals.py --save evals/results/baseline.json`) needs a real API key, so it has to run on the user's machine.
+
 ### Phase 1: Jev client and browser decider (behind a flag, default off)
 - `jev.py`: one `httpx` client, retry once on timeout/5xx, `JevError` → the same `LLMError` path, `validate_choice()`. Nothing executes on an invalid answer.
 - `config.py`: `TYPESAFE_API_KEY`, `TYPESAFE_MODEL=jev-latest`, `DECIDER=claude|jev|hybrid` (default `claude`), `JEV_MIN_CONFIDENCE`. Add a `TYPESAFE_API_KEY` pattern to `logger.py` redaction (defense in depth, not the only guard).

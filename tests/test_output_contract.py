@@ -64,3 +64,44 @@ def test_failed_task_also_writes_a_structured_record(test_config, fixtures_serve
     # touched artifact, even though the task ultimately failed.
     assert {"type": "url_visited", "url": f"{fixtures_server}/sensitive_button.html"} in record["artifacts"]
     assert record["token_usage"] == {"input_tokens": 0, "output_tokens": 0}
+
+
+def test_record_includes_per_step_timings_without_confirmation_wait(test_config, fixtures_server, monkeypatch):
+    # Phase 0 baseline (docs/JEV_VOICE_PLAN.md): every step's observe/decide/
+    # act time is recorded, and a human's time answering [y/n] is kept out
+    # of act_ms -- otherwise a slow "y" would read as a slow agent.
+    import time as _time
+
+    def slow_yes(prompt):
+        _time.sleep(0.3)
+        return True
+
+    mock = MockProvider([
+        _reply("Opening the page.", "goto", {"url": f"{fixtures_server}/sensitive_button.html"}),
+        _reply("Clicking delete.", "click", {"index": 0}),
+        _reply("Done.", "finish", {"summary": "Clicked the delete button on the fixture page."}),
+    ])
+    outcome = run_task(
+        "Click delete.", test_config, dry_run=False, llm_client=LLMClient(mock), confirm_callback=slow_yes,
+    )
+
+    assert outcome["success"] is True
+    timings = _read_output(outcome["output_path"])["timings"]
+    steps = timings["steps"]
+    assert [s["action"] for s in steps] == ["goto", "click", "finish"]
+    assert all("decide_ms" in s for s in steps)
+    assert "observe_ms" not in steps[0]  # no page open before the first goto
+    assert "observe_ms" in steps[1]
+    click = steps[1]
+    assert click["confirm_wait_ms"] >= 300
+    assert click["act_ms"] < click["confirm_wait_ms"]
+    assert timings["median_decide_ms"] is not None
+    assert timings["median_observe_ms"] is not None
+
+
+def test_timings_summary_is_empty_but_well_formed_when_no_step_ran():
+    from agent import summarize_timings
+
+    assert summarize_timings([]) == {
+        "median_observe_ms": None, "median_decide_ms": None, "median_act_ms": None, "steps": [],
+    }

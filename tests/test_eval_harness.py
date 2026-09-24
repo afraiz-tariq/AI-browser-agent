@@ -83,3 +83,34 @@ def test_teardown_runs_even_when_check_raises(test_config, tmp_path):
         pass
 
     assert len(teardown_calls) == 1
+
+
+def test_timings_are_read_back_and_summarized(test_config, tmp_path):
+    # The Phase 0 baseline (docs/JEV_VOICE_PLAN.md) comes from these numbers,
+    # so the harness must carry run_task()'s per-step timings through and
+    # save_results() must write them with no secrets or page text.
+    from evals.run_evals import save_results, speed_summary
+
+    xlsx_path = tmp_path / "eval_write_roundtrip.xlsx"
+    mock = MockProvider([
+        _reply("Creating.", "excel_open", {"path": str(xlsx_path), "create_if_missing": True}),
+        _reply("Writing.", "excel_write_cell", {"sheet": "Sheet", "cell": "A1", "value": "42"}),
+        _reply("Saving.", "excel_save", {}),
+        _reply("Done.", "finish", {"summary": "Wrote 42 to A1 and saved."}),
+    ])
+    result = run_single_eval(
+        TASK_EXCEL_WRITE_ROUNDTRIP, test_config, tmp_path, fixtures_server=None, llm_client=LLMClient(mock),
+    )
+
+    assert [s["action"] for s in result.timings["steps"]] == ["excel_open", "excel_write_cell", "excel_save", "finish"]
+    summary = speed_summary([result])
+    assert summary["tasks_ran"] == 1 and summary["tasks_passed"] == 1
+    assert summary["median_steps_per_task"] == 4
+    assert summary["median_decide_ms"] is not None
+    assert summary["median_observe_ms"] is None  # Excel-only: no page was ever observed
+
+    out = tmp_path / "baseline.json"
+    save_results([result], test_config, out)
+    saved = json.loads(out.read_text(encoding="utf-8"))
+    assert saved["summary"] == summary
+    assert saved["tasks"][0]["task_id"] == TASK_EXCEL_WRITE_ROUNDTRIP.id

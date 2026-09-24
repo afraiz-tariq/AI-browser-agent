@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import statistics
 import time
 from datetime import datetime
 from pathlib import Path
@@ -114,7 +115,17 @@ def run_task(
     rather than blocking on a terminal that isn't attached.
     """
     logger = TaskLogger(Path(__file__).parent / "logs", task)
-    confirm = confirm_callback or ask_confirmation
+    user_confirm = confirm_callback or ask_confirmation
+    # Time spent waiting on a human to answer [y/n] is not agent speed, so
+    # it's measured separately and subtracted from the step's act time.
+    confirm_wait = {"ms": 0.0}
+
+    def confirm(prompt: str) -> bool:
+        started = time.perf_counter()
+        try:
+            return user_confirm(prompt)
+        finally:
+            confirm_wait["ms"] += (time.perf_counter() - started) * 1000
     session = BrowserSession(config)  # Chrome itself isn't launched until first use -- see BrowserToolProvider.ensure_ready
     excel_session = ExcelSession()
     mcp_providers: list[MCPToolProvider] = []  # only non-empty per ENABLE_MCP_* flags -- closed in the finally below
@@ -135,6 +146,11 @@ def run_task(
     # it was, since discord_bot.py and the tests depend on that shape).
     artifacts: list[dict] = []
     verification_warnings: list[str] = []
+    # Per-step wall-clock timings (observe / decide / act, in ms) for the
+    # structured output record -- the baseline docs/JEV_VOICE_PLAN.md's
+    # Phase 0 measures before any speed work. A phase a step never reached
+    # (e.g. no browser page open yet, or a rejected finish) is left out.
+    step_timings: list[dict] = []
 
     try:
         # One ToolProvider per arm, registered by tool name -- this is the
@@ -181,6 +197,8 @@ def run_task(
 
         for step in range(1, config.max_steps + 1):
             steps_taken = step
+            timing: dict = {"step": step}
+            step_timings.append(timing)
             # OBSERVE only applies to the browser arm. Before the browser
             # has been used at all (session.page is None -- e.g. an
             # Excel-only task, or a mixed task that hasn't reached a
@@ -191,7 +209,9 @@ def run_task(
                 observation = None
             else:
                 try:
+                    started = time.perf_counter()
                     observation = session.observe(max_chars=config.max_dom_chars)
+                    timing["observe_ms"] = round((time.perf_counter() - started) * 1000, 1)
                 except Exception as e:
                     raise TaskCannotBeCompleted(
                         explain(
@@ -266,7 +286,9 @@ def run_task(
                 )
 
             try:
+                started = time.perf_counter()
                 decision = llm.decide_next_action(task, history, observation)
+                timing["decide_ms"] = round((time.perf_counter() - started) * 1000, 1)
             except LLMError as e:
                 raise TaskCannotBeCompleted(
                     explain(
@@ -277,6 +299,7 @@ def run_task(
                 ) from e
 
             action = decision.get("action", "")
+            timing["action"] = action
             args = decision.get("args", {}) or {}
             thought = decision.get("thought", "")
             current_url = observation.url if observation is not None else "(no browser page open)"
@@ -353,10 +376,18 @@ def run_task(
                 # The model already has the visible text; nothing to execute.
                 continue
 
+            act_started = time.perf_counter()
+            confirm_wait["ms"] = 0.0
             try:
-                result_text = _dispatch_action(
-                    tool_owner, tool_spec_by_name, action, args, config, dry_run, confirm
-                )
+                try:
+                    result_text = _dispatch_action(
+                        tool_owner, tool_spec_by_name, action, args, config, dry_run, confirm
+                    )
+                finally:
+                    elapsed = (time.perf_counter() - act_started) * 1000
+                    timing["act_ms"] = round(elapsed - confirm_wait["ms"], 1)
+                    if confirm_wait["ms"]:
+                        timing["confirm_wait_ms"] = round(confirm_wait["ms"], 1)
             except IndexError as e:
                 logger.error(str(e))
                 history[-1] += " [FAILED: invalid element index]"
@@ -441,6 +472,7 @@ def run_task(
         # start) -- no LLM calls happened in that case, so {0, 0} is the
         # honest answer, not a missing one.
         token_usage=llm.get_usage() if llm is not None else {"input_tokens": 0, "output_tokens": 0},
+        timings=summarize_timings(step_timings),
     )
 
     if error_message:
@@ -498,9 +530,25 @@ def _dispatch_action(
     return provider.execute(action, args)
 
 
+def summarize_timings(step_timings: list[dict]) -> dict:
+    """Per-step timings plus the medians the Phase 0 baseline compares
+    (docs/JEV_VOICE_PLAN.md). A median is None when no step reached that
+    phase (e.g. an Excel-only task never observes a page)."""
+    def median(key: str) -> float | None:
+        values = [t[key] for t in step_timings if key in t]
+        return round(statistics.median(values), 1) if values else None
+
+    return {
+        "median_observe_ms": median("observe_ms"),
+        "median_decide_ms": median("decide_ms"),
+        "median_act_ms": median("act_ms"),
+        "steps": step_timings,
+    }
+
+
 def _save_output(
     task: str, status: str, summary: str, steps_taken: int, artifacts: list[dict], verification_warnings: list[str],
-    token_usage: dict[str, int],
+    token_usage: dict[str, int], timings: dict | None = None,
 ) -> Path:
     """
     Structured result contract (ARCHITECTURE_DECISIONS.md section 4):
@@ -512,6 +560,8 @@ def _save_output(
     {"input_tokens", "output_tokens"} accumulated across every real LLM
     call this task made (see LLMClient.get_usage()) -- {0, 0} for a
     MockProvider-driven run, which is accurate, not a placeholder.
+    `timings` is summarize_timings()'s per-step observe/decide/act ms, with
+    time spent waiting on a human [y/n] answer excluded from act.
     """
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     path = OUTPUT_DIR / f"{stamp}.json"
@@ -523,6 +573,7 @@ def _save_output(
         "artifacts": artifacts,
         "verification_warnings": verification_warnings,
         "token_usage": token_usage,
+        "timings": timings or summarize_timings([]),
         "saved_at": datetime.now().isoformat(),
     }
     path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")

@@ -14,6 +14,20 @@ full commit message.
 
 ## 2026-09-24
 
+- `observe()` now reads the whole page in one in-page snapshot instead of
+  ~7 Playwright round trips per element: 41-59x faster on the generated
+  benchmark pages (50 elements: 1,169 -> 29 ms; 200: 4,352 -> 74 ms; 500:
+  10,807 -> 208 ms, median of 10, headless Chromium in the dev container).
+  Output checked identical, old vs new, on all 12 test fixtures plus the
+  benchmark pages and an edge-case page (display:contents, hidden/collapsed,
+  closed <details>, zero-size). New `evals/bench_observe.py` reproduces the
+  numbers offline.
+- Every output record now has a `timings` block (per-step observe/decide/act
+  ms, with human [y/n] wait excluded, plus medians), and
+  `evals/run_evals.py` reports them and can `--save` a JSON baseline. Part of
+  Phase 0 of `docs/JEV_VOICE_PLAN.md`; the live Claude baseline itself still
+  needs a run with a real API key.
+
 - Fixed secret field values being able to reach the LLM: a pre-filled
   password input with no label had its password used as its label in the
   prompt. Both arms now mask password/PIN/card/token fields (browser:

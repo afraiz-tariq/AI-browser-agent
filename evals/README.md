@@ -1,6 +1,6 @@
 # Eval suite
 
-`tests/*.py` (223 tests) drive the agent loop with `MockProvider` --
+`tests/*.py` (226 tests) drive the agent loop with `MockProvider` --
 scripted replies -- to prove the *mechanism* is correct: dispatch, risk
 gating, the VERIFY step, text pagination, stuck-loop detection, and so on.
 None of those tests ever ask a real model to reason its way through
@@ -22,6 +22,7 @@ cannot be run inside a sandboxed dev environment with no live API key --
 
 ```
 python evals/run_evals.py
+python evals/run_evals.py --save evals/results/baseline.json   # also keep a JSON copy to compare later runs against
 ```
 
 This costs real LLM API calls -- one full `run_task()` run per task below.
@@ -64,9 +65,31 @@ output) across every task that actually ran -- read from the same
 structured `output/*.json` records every real run writes (see
 `ARCHITECTURE_DECISIONS.md`).
 
+Each task also prints its step count and median per-step decide / observe /
+act time, and the report ends with the same medians across every task. These
+come from the `timings` block every `output/*.json` record now carries.
+Time spent waiting for a human `[y/n]` answer is excluded from act. This is
+the speed baseline `docs/JEV_VOICE_PLAN.md` Phase 0 asks for: run it once
+with `--save`, and later runs (another `LLM_MODEL`, or a future `DECIDER`)
+can be compared against that file.
+
+`--save` writes task ids, pass/fail, details, timings and token counts only,
+no API keys and no page contents.
+
 A `SKIP` is not a failure -- it means that task's `requires(config)` was
 false for your current `.env` (e.g. you haven't turned on
 `ENABLE_MCP_FETCH`). Turn on the relevant flag to include it.
+
+## Page-reading speed (free, offline)
+
+```
+python evals/bench_observe.py
+```
+
+Times `BrowserSession.observe()` on generated local pages of 50/200/500
+interactive elements. No LLM, no API key, no internet, so it costs nothing
+and is safe to run after any change to `observe()`. It needs the same
+Chrome/`.env` browser settings as a normal run (it forces headless).
 
 ## Testing the harness itself
 
