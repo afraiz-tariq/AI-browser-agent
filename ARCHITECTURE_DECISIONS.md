@@ -53,6 +53,14 @@ A personal, local, command-line (+ Discord) AI agent that takes a plain-English 
 
 ---
 
+## 2a. Decision (2026-09-25): DeepSeek is the default LLM; Claude stays supported
+
+After Anthropic's cost used up the user's credit, the cheaper providers the reference projects use (§ `docs/JEV_VOICE_PLAN.md`) were measured on this project's own eval suite. `deepseek-flash` in hybrid mode passed 11/11, the same as `claude-sonnet-5`, in 81 s against 101 s, for about $0.012 against $0.114 per run (`evals/README.md`). The user chose to keep it, so `.env.example` now defaults to `LLM_PROVIDER=deepseek`, `LLM_MODEL=deepseek-flash`.
+
+- **This is a configuration default, not a migration.** `AnthropicProvider` (with prompt caching) is unchanged and one `.env` edit away. §3's point 2 about Claude and native tool-calling still holds: DeepSeek is used through the same native tool-calling path (`tool_choice="required"`), so the empty-summary fix (bug 2) still applies. The eval suite is what showed it holds.
+- **Privacy trade-off, accepted by the user:** on the steps it decides, DeepSeek (servers in China) receives the task and page/window text. Secret fields are masked first (bug 12). Private tasks should use Anthropic.
+- **Re-check it** with `python evals/run_evals.py --save ...` whenever the model name, the prompt or the tools change. One run of 11 tasks is evidence, not proof.
+
 ## 3. Decision: keep the current architecture. Do not migrate to a new agent runtime or replace the browser/Excel arms.
 
 Three separate rounds of external research (each proposing, with varying framing, "build on OpenAI Agents SDK / Claude Agent SDK + Browser Use/Skyvern + a new repo structure") were reviewed and rejected for the same core reasons, restated once here so they don't need re-litigating:

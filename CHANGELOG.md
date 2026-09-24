@@ -12,6 +12,12 @@ ARCHITECTURE_DECISIONS.md when a change touches them. One or two plain-
 sentence bullets per change is enough; this isn't meant to restate the
 full commit message.
 
+## 2026-09-25
+
+- DeepSeek (`deepseek-flash`) is now the default in `.env.example`, by the
+  user's choice after it matched Sonnet on the evals at ~10% of the cost.
+  Anthropic stays supported (ARCHITECTURE_DECISIONS.md §2a).
+
 ## 2026-09-24
 
 - DeepSeek measured (2026-09-25, `deepseek-flash`, hybrid): 11/11 evals

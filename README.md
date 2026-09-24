@@ -655,6 +655,10 @@ models later -- nothing else in the code references a specific provider.
 
 ## Cost awareness
 
+**Default since 2026-09-25: `deepseek` / `deepseek-flash`** (see
+ARCHITECTURE_DECISIONS.md §2a). For tasks involving private information,
+switch to `anthropic` / `claude-sonnet-5`.
+
 **Choosing a cheaper model.** Measured on this agent (2026-09-24 evals): a
 Claude step sends ~6,600 tokens, ~84% of them cached, and gets ~100 back.
 At September 2026 list prices that's roughly, per step:
