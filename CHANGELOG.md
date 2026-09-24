@@ -14,6 +14,14 @@ full commit message.
 
 ## 2026-09-25
 
+- Voice looks like an app now: `start_voice.bat` runs it without a
+  terminal, as a small floating window (what it heard, the current step,
+  the result) and an icon by the clock (state colour; Show window, Pause
+  microphone, Open log, Quit). Confirmations show Yes / No buttons next to
+  the spoken question -- a click or a spoken answer, whichever comes
+  first. `run_task()` gained an optional display-only `on_step` callback.
+  `VOICE_UI=false` keeps the terminal.
+
 - Less effort to use voice: tap right Ctrl and speak (recording ends about
   a second after you stop talking; `VOICE_MODE=hold` keeps the old
   hold-to-talk), spoken yes/no answers end as soon as you've said them,

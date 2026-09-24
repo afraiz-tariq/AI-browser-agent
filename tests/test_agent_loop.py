@@ -355,3 +355,19 @@ def test_an_unknown_model_name_is_explained():
         "model names are deepseek-flash, deepseek-v4-pro, but you passed deepseek-v4.1-flash.'}}"))
     assert "doesn't know the model name" in msg.splitlines()[0]
     assert "deepseek-flash" in msg  # the accepted names stay visible
+
+
+def test_on_step_is_told_each_step_and_its_errors_are_ignored(test_config, fixtures_server):
+    seen = []
+
+    def on_step(step, thought, action):
+        seen.append((step, action))
+        raise RuntimeError("the window broke")  # must not break the task
+
+    mock = MockProvider([
+        _reply("Opening.", "goto", {"url": f"{fixtures_server}/index.html"}),
+        _reply("Done.", "finish", {"summary": "The mock search engine page has a search box."}),
+    ])
+    outcome = run_task("Open it.", test_config, dry_run=True, llm_client=LLMClient(mock), on_step=on_step)
+    assert outcome["success"] is True
+    assert seen == [(1, "goto"), (2, "finish")]

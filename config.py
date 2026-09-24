@@ -113,6 +113,10 @@ class Config:
     # hold: hold the key while speaking, release to send.
     voice_mode: str = field(default_factory=lambda: os.getenv("VOICE_MODE", "tap").strip().lower())
     voice_stop_key: str = field(default_factory=lambda: os.getenv("VOICE_STOP_KEY", "f10"))
+    # A small floating window (what it heard, the current step, Yes / No
+    # buttons for confirmations) and an icon by the clock -- voice_ui.py.
+    # false: the terminal only, as before.
+    voice_ui: bool = field(default_factory=lambda: _bool("VOICE_UI", True))
     # Local speech-to-text model (faster-whisper): tiny.en / base.en / small.en
     # -- bigger is more accurate and slower. Language "en" for English.
     voice_whisper_model: str = field(default_factory=lambda: os.getenv("VOICE_WHISPER_MODEL", "base.en"))

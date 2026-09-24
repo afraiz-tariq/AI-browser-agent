@@ -145,7 +145,7 @@ def test_jev_down_means_the_full_agent_runs():
 def test_voice_uses_the_quick_path_and_skips_the_agent():
     quick, done = _quick()
     said, runs = [], []
-    assistant = VoiceAssistant(None, lambda a: "Open notepad.", said.append, lambda s: None,
+    assistant = VoiceAssistant(None, lambda a: "Open notepad.", said.append, lambda s, abort=None: None,
                                lambda *a, **k: runs.append(a), log=lambda m: None, quick=quick)
     outcome = assistant.handle_audio("audio")
     assert outcome == {"success": True, "result": "Opening notepad.", "quick": True}
@@ -159,7 +159,7 @@ def test_voice_falls_back_to_the_agent_if_the_shortcut_errors():
     quick = QuickCommands(SAFE, launch_app=broken, open_url=lambda u: None, press_media_key=lambda k: None,
                           log=lambda m: None)
     runs = []
-    assistant = VoiceAssistant(None, lambda a: "open notepad", lambda t: None, lambda s: None,
+    assistant = VoiceAssistant(None, lambda a: "open notepad", lambda t: None, lambda s, abort=None: None,
                                lambda text, config, **k: runs.append(text) or {"success": True, "result": "ok"},
                                log=lambda m: None, quick=quick)
     assistant.handle_audio("audio")

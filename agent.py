@@ -101,6 +101,7 @@ def run_task(
     task: str, config, dry_run: bool = False, llm_client: LLMClient | None = None,
     confirm_callback: Callable[[str], bool] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    on_step: Callable[[int, str, str], None] | None = None,
 ) -> dict:
     """
     Runs one task end-to-end and returns a result dict. Also writes a log
@@ -120,6 +121,10 @@ def run_task(
     before an action runs; when it returns True the task stops cleanly with
     a "stopped by you" failure. voice.py wires its stop key to it -- the
     spoken equivalent of Ctrl+C that doesn't kill the whole program.
+
+    `on_step(step, thought, action)`, if given, is told about each decided
+    step before it runs -- display only (voice.py's window shows "Step 3:
+    ..."); anything it raises is ignored.
     """
     logger = TaskLogger(Path(__file__).parent / "logs", task)
     user_confirm = confirm_callback or ask_confirmation
@@ -326,6 +331,11 @@ def run_task(
             logger.action(step, thought, action, args, current_url)
             print(f"\nStep {step}: {thought}")
             print(f"  -> {action} {args}")
+            if on_step is not None:
+                try:
+                    on_step(step, thought, action)  # e.g. voice.py's window; display only
+                except Exception:  # noqa: BLE001 -- a display glitch must never break the task
+                    pass
 
             # --- stuck-loop / cost guard: bail out if the model repeats the
             # exact same action three times in a row, or oscillates between

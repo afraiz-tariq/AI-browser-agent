@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 403 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 415 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -464,13 +464,30 @@ Windows arm (only works once `ENABLE_WINDOWS_AUTOMATION=true` -- see
 Control the agent by talking to it (Windows):
 
 ```
-pip install faster-whisper sounddevice pyttsx3
+pip install faster-whisper sounddevice pyttsx3 pystray pillow
 python voice.py
 ```
 
 **No terminal needed:** double-click `start_voice.bat` in the project
-folder (it uses the project's own `.venv`, nothing to activate). To have it
-start by itself, minimized, every time you log in to Windows, run once:
+folder (it uses the project's own `.venv`, nothing to activate). It runs
+without a terminal window, as a **small floating window** in the
+bottom-right corner plus an **icon by the clock**:
+
+- The window shows what it heard, the step it's on ("Step 2: typing 'ABC'
+  into the search box"), and the result. Drag it anywhere; `–` hides it,
+  and tapping the talk key brings it back.
+- Before a risky action it shows **Yes / No buttons**. Click one, or say
+  "yes"/"no" -- whichever comes first counts. If you say nothing, the
+  buttons stay up for 30 seconds, then it's a no. The agent can't click
+  them itself: it's paused, waiting for your answer, while they're up.
+- The icon's colour shows the state (grey ready, red listening, blue
+  working, amber asking). Right-click it: Show window, Pause microphone,
+  Open log (`output/voice.log`, what the terminal would have shown), Quit.
+- `VOICE_UI=false` goes back to the terminal only (run `python voice.py`).
+- Needs `pip install pystray pillow` for the icon; without them you still
+  get the window.
+
+To have it start by itself every time you log in to Windows, run once:
 
 ```
 python voice.py --autostart on     # "off" undoes it
@@ -612,6 +629,7 @@ each other.
 | `MCP_FILESYSTEM_ROOT` | Required if `ENABLE_MCP_FILESYSTEM=true` -- the one local folder the agent may read from |
 | `MCP_STARTUP_TIMEOUT_S` | How long to wait for an MCP server to start before giving up; default `90` (an npx-launched server can be slow on a cold npm registry round-trip) |
 | `VOICE_PTT_KEY` | Voice: hold this key to talk (default `ctrl_r` = right Ctrl; also `f9`, `alt_gr`, `scroll_lock`, a letter... -- `python voice.py --keys` shows names) |
+| `VOICE_UI` | Voice: the floating window with Yes / No buttons and the icon by the clock (default `true`); `false` = terminal only |
 | `VOICE_MODE` | Voice: `tap` (default: tap the key and speak, recording ends when you stop talking) or `hold` (hold the key while speaking) |
 | `VOICE_STOP_KEY` | Voice: stops a running task before its next action (default `f10`) |
 | `VOICE_WHISPER_MODEL` | Voice: local speech-to-text model, `tiny.en` / `base.en` (default) / `small.en` |

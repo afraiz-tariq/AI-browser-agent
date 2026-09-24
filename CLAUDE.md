@@ -33,6 +33,7 @@ One arm = one file implementing `ToolProvider` (`tool_provider.py` is the contra
 | Optional Jev decider (`DECIDER=hybrid`), Claude fallback | `jev.py` | `test_jev.py` |
 | Discord interface, confirm-in-chat | `discord_bot.py` | `test_discord_bot.py` |
 | Voice interface, spoken confirm, stop key | `voice.py` | `test_voice.py` |
+| Voice window (Yes/No buttons) and tray icon | `voice_ui.py` | `test_voice.py` |
 | Voice quick commands (open app/site, volume, media, screenshot) | `quick_commands.py` | `test_quick_commands.py` |
 | `.env` parsing/validation | `config.py` | `test_config.py` |
 | Risk-tier/confirmation contract itself | `tool_provider.py` | `test_tool_provider.py` |

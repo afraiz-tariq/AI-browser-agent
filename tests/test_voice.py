@@ -29,12 +29,12 @@ def test_anything_else_is_a_no(heard):
 
 def test_confirm_asks_aloud_then_listens_and_only_yes_continues():
     said = []
-    confirm = make_voice_confirm(listen=lambda s: "audio", transcribe=lambda a: "Yes.", say=said.append,
+    confirm = make_voice_confirm(listen=lambda s, abort=None: "audio", transcribe=lambda a: "Yes.", say=said.append,
                                  log=lambda m: None)
     assert confirm("Ready to click <button 'Submit'>. Continue?") is True
     assert said == ["Ready to click <button 'Submit'>. Continue? Say yes or no."]
 
-    no = make_voice_confirm(lambda s: "audio", lambda a: "hmm, what?", lambda t: None, log=lambda m: None)
+    no = make_voice_confirm(lambda s, abort=None: "audio", lambda a: "hmm, what?", lambda t: None, log=lambda m: None)
     assert no("Continue?") is False
 
 
@@ -42,25 +42,25 @@ def test_silence_gets_asked_once_more_instead_of_counting_as_no():
     # The first voice search declined on '' although the user never said no.
     said = []
     answers = iter(["", "Yes."])
-    confirm = make_voice_confirm(lambda s: "audio", lambda a: next(answers), said.append, log=lambda m: None)
+    confirm = make_voice_confirm(lambda s, abort=None: "audio", lambda a: next(answers), said.append, log=lambda m: None)
     assert confirm("Ready to type into <textarea> and submit. Continue?") is True
     assert said[1] == "I didn't hear an answer. Say yes or no."
 
 
 def test_silence_twice_still_declines_and_a_no_is_not_asked_again():
     said = []
-    confirm = make_voice_confirm(lambda s: "audio", lambda a: "", said.append, log=lambda m: None)
+    confirm = make_voice_confirm(lambda s, abort=None: "audio", lambda a: "", said.append, log=lambda m: None)
     assert confirm("Continue?") is False
     assert len(said) == 2
 
     said.clear()
-    confirm = make_voice_confirm(lambda s: "audio", lambda a: "No.", said.append, log=lambda m: None)
+    confirm = make_voice_confirm(lambda s, abort=None: "audio", lambda a: "No.", said.append, log=lambda m: None)
     assert confirm("Continue?") is False
     assert len(said) == 1  # a real answer is final
 
 
 def test_confirm_declines_if_the_microphone_or_model_fails():
-    def broken(_seconds):
+    def broken(_seconds, abort=None):
         raise OSError("no microphone")
 
     confirm = make_voice_confirm(broken, lambda a: "yes", lambda t: None, log=lambda m: None)
@@ -87,14 +87,14 @@ class _Fakes:
     def transcribe(self, audio):
         return self.transcripts.pop(0) if self.transcripts else ""
 
-    def run(self, text, config, confirm_callback, should_stop):
+    def run(self, text, config, confirm_callback, should_stop, on_step=None):
         self.runs.append({"text": text, "confirm": confirm_callback, "should_stop": should_stop})
         return {"success": True, "result": "Opened Notepad and typed hello."}
 
 
 def test_a_spoken_task_runs_through_run_task_and_the_result_is_spoken():
     fakes = _Fakes(["Open Notepad and type hello."])
-    assistant = VoiceAssistant(None, fakes.transcribe, fakes.said.append, lambda s: None, fakes.run,
+    assistant = VoiceAssistant(None, fakes.transcribe, fakes.said.append, lambda s, abort=None: None, fakes.run,
                                log=lambda m: None)
 
     outcome = assistant.handle_audio("audio")
@@ -107,7 +107,7 @@ def test_a_spoken_task_runs_through_run_task_and_the_result_is_spoken():
 
 def test_silence_or_a_tap_runs_nothing():
     fakes = _Fakes([""])
-    assistant = VoiceAssistant(None, fakes.transcribe, fakes.said.append, lambda s: None, fakes.run,
+    assistant = VoiceAssistant(None, fakes.transcribe, fakes.said.append, lambda s, abort=None: None, fakes.run,
                                log=lambda m: None)
     assert assistant.handle_audio("audio") is None
     assert fakes.runs == []
@@ -115,7 +115,7 @@ def test_silence_or_a_tap_runs_nothing():
 
 def test_stop_key_is_wired_to_run_task_and_reset_for_the_next_task():
     fakes = _Fakes(["first task", "second task"])
-    assistant = VoiceAssistant(None, fakes.transcribe, fakes.said.append, lambda s: None, fakes.run,
+    assistant = VoiceAssistant(None, fakes.transcribe, fakes.said.append, lambda s, abort=None: None, fakes.run,
                                log=lambda m: None)
     assistant.handle_audio("a")
     assistant.request_stop()
@@ -200,7 +200,7 @@ def test_assistant_flags_when_it_is_listening_for_a_yes_or_no():
     seen = []
     fakes = _Fakes(["Yes."])
 
-    def listen(seconds):
+    def listen(seconds, abort=None):
         seen.append(assistant.answering.is_set())
         return "audio"
 
@@ -213,7 +213,7 @@ def test_a_failed_task_shows_the_full_reason_on_screen():
     logged = []
     failure = ("WHAT HAPPENED: The AI model could not be reached or gave an unusable reply.\n"
                "WHY: Anthropic request failed: Error code: 529 overloaded\nWHAT YOU CAN DO: retry")
-    assistant = VoiceAssistant(None, lambda a: "open notepad", lambda t: None, lambda s: None,
+    assistant = VoiceAssistant(None, lambda a: "open notepad", lambda t: None, lambda s, abort=None: None,
                                lambda *a, **k: {"success": False, "result": failure}, log=logged.append)
     assistant.handle_audio("audio")
     assert any("529 overloaded" in line for line in logged)
@@ -298,4 +298,138 @@ def test_the_launcher_script_runs_voice_with_the_projects_own_python():
     bat = (Path(__file__).resolve().parent.parent / "start_voice.bat").read_bytes()
     assert b"\r\n" in bat  # Windows line endings
     assert b'".venv\\Scripts\\python.exe" voice.py' in bat
+    assert b'start "" ".venv\\Scripts\\pythonw.exe" voice.py' in bat  # no terminal window when it can
     assert b'cd /d "%~dp0"' in bat  # works wherever the project folder is
+
+
+# --- the floating window: Yes / No buttons, status -----------------------------
+
+from voice_ui import Choice, NullUi  # noqa: E402
+from voice import result_for_window  # noqa: E402
+
+
+def test_the_first_button_answer_wins():
+    choice = Choice()
+    assert choice.wait(0.01) is None and not choice.decided
+    assert choice.answer(True) is True
+    assert choice.answer(False) is False  # a second click changes nothing
+    assert choice.value is True and choice.wait(0) is True
+
+
+class _FakeUi(NullUi):
+    """Records what the window was told; `click` answers the question at a
+    chosen moment: 'before' the spoken question ends, 'during' listening."""
+
+    def __init__(self, click=None, when="during"):
+        self.events, self.click, self.when, self.choice = [], click, when, None
+
+    def ask(self, prompt):
+        self.events.append(("ask", prompt))
+        self.choice = Choice()
+        return self.choice
+
+    def end_question(self):
+        self.events.append(("end",))
+
+    def status(self, kind, text=""):
+        self.events.append(("status", kind))
+
+    def heard(self, text):
+        self.events.append(("heard", text))
+
+    def step(self, text):
+        self.events.append(("step", text))
+
+    def result(self, text, ok):
+        self.events.append(("result", text, ok))
+
+
+def _confirm_with(ui, transcripts, click_wait=0.05):
+    transcribed, said = [], []
+    answers = iter(transcripts)
+
+    def say(text):
+        said.append(text)
+        if ui.click is not None and ui.when == "before":
+            ui.choice.answer(ui.click)
+
+    def listen(seconds, abort):
+        if ui.click is not None and ui.when == "during":
+            ui.choice.answer(ui.click)
+            assert abort() is True  # the recording is told to stop at once
+        return "audio"
+
+    def transcribe(audio):
+        transcribed.append(audio)
+        return next(answers, "")
+
+    confirm = make_voice_confirm(listen, transcribe, say, log=lambda m: None, ui=ui, click_wait=click_wait)
+    return confirm, said, transcribed
+
+
+@pytest.mark.parametrize("when", ["before", "during"])
+@pytest.mark.parametrize("click", [True, False])
+def test_a_click_answers_the_question(click, when):
+    ui = _FakeUi(click=click, when=when)
+    confirm, said, transcribed = _confirm_with(ui, [])
+    assert confirm("Ready to click <button 'Send'>. Continue?") is click
+    assert transcribed == []  # the recording isn't even transcribed
+    assert said[0].endswith("Say yes or no, or click a button.")
+    assert ui.events[-1] == ("end",)  # the buttons go away
+
+
+def test_a_spoken_answer_still_works_with_the_window_open():
+    ui = _FakeUi()
+    confirm, _, _ = _confirm_with(ui, ["Yes."])
+    assert confirm("Continue?") is True
+    confirm, _, _ = _confirm_with(ui, ["No."])
+    assert confirm("Continue?") is False
+    assert ui.choice.decided  # closing the question answers it (no), so a late click can't count
+
+
+def test_silence_leaves_the_buttons_up_for_a_while_then_declines():
+    ui = _FakeUi()
+    confirm, said, _ = _confirm_with(ui, ["", ""], click_wait=0.05)
+    assert confirm("Continue?") is False  # nobody said or clicked anything
+    assert len(said) == 2
+
+
+def test_a_click_after_the_silence_still_counts():
+    ui = _FakeUi()
+    confirm, _, _ = _confirm_with(ui, ["", ""], click_wait=2)
+    import threading
+    threading.Timer(0.05, lambda: ui.choice.answer(True)).start()
+    assert confirm("Continue?") is True
+
+
+def test_the_window_follows_the_task():
+    ui = _FakeUi()
+    steps = []
+
+    def run(text, config, confirm_callback, should_stop, on_step=None):
+        on_step(1, "Opening Google.", "goto")
+        steps.append(text)
+        return {"success": True, "result": "Searched Google for ABC. Results are showing."}
+
+    assistant = VoiceAssistant(None, lambda a: "search google for ABC", lambda t: None, lambda s, a=None: None, run,
+                               log=lambda m: None, ui=ui)
+    assistant.handle_audio("audio")
+    assert ("heard", "search google for ABC") in ui.events
+    assert ("step", "Step 1: Opening Google.") in ui.events
+    assert ui.events[-1] == ("result", "Searched Google for ABC.", True)
+
+
+def test_a_failure_shows_what_happened_and_why_but_not_the_long_advice():
+    outcome = {"success": False, "result": "WHAT HAPPENED: Chrome could not be launched.\n"
+                                           "WHY: Chrome may not be installed.\nWHAT YOU CAN DO: Install it."}
+    assert result_for_window(outcome) == "Chrome could not be launched. Chrome may not be installed."
+
+
+def test_the_tray_icon_is_a_dot_in_the_status_colour():
+    pytest.importorskip("PIL")
+    from voice_ui import STATUS_COLORS, icon_image
+
+    image = icon_image(STATUS_COLORS["listening"])
+    assert image.size == (64, 64)
+    assert image.getpixel((32, 32))[:3] == (0xEF, 0x44, 0x44)  # red while listening
+    assert image.getpixel((1, 1))[3] == 0  # transparent corners
