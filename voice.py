@@ -294,6 +294,7 @@ class VoiceAssistant:
         self.log = log
         self.run = run
         self.control = TaskControl()
+        self._browser = None  # one Chrome kept open across tasks (KEEP_BROWSER_OPEN); see shared_browser()
         # Set while a confirmation question is listening for yes/no, so the
         # key loop can say "no key needed" instead of "still working".
         self.answering = threading.Event()
@@ -352,7 +353,7 @@ class VoiceAssistant:
         outcome = self.run(
             text + SPOKEN_TASK_HINT, self.config, confirm_callback=self.confirm, should_stop=self.control.should_stop,
             on_step=self.ui.agent_step, task_updates=self.control.take_notes, ask_user=self.ask_user,
-            handoff=self.handoff,
+            handoff=self.handoff, browser_session=self.shared_browser(),
         )
         self.control.resume()
         if not outcome.get("success"):
@@ -363,6 +364,19 @@ class VoiceAssistant:
         self.ui.result(result_for_window(outcome), bool(outcome.get("success")))
         self.say(short_for_speech(outcome.get("result", "")) or ("Done." if outcome.get("success") else "That failed."))
         return outcome
+
+    def shared_browser(self):
+        """The BrowserSession this assistant keeps open across tasks, or None
+        (KEEP_BROWSER_OPEN=false) to let each task open and close its own.
+        Created on the worker thread and only ever used from it, as
+        Playwright's sync API requires."""
+        if not getattr(self.config, "keep_browser_open", False):
+            return None
+        if self._browser is None:
+            from browser import BrowserSession
+
+            self._browser = BrowserSession(self.config)
+        return self._browser
 
     def request_stop(self) -> None:
         self.log("  [voice] stop requested -- the task will stop before its next action.")

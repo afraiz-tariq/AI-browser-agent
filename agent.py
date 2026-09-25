@@ -115,6 +115,7 @@ def run_task(
     task_updates: Callable[[], list[str]] | None = None,
     ask_user: Callable[[str], str | None] | None = None,
     handoff: Callable[[str], bool] | None = None,
+    browser_session: BrowserSession | None = None,
 ) -> dict:
     """
     Runs one task end-to-end and returns a result dict. Also writes a log
@@ -149,6 +150,11 @@ def run_task(
       the same way.
     - `handoff(message)` replaces the terminal prompt at a login/CAPTCHA
       wall: the person clears it, then says continue (True) or stop.
+
+    `browser_session`, if given, is a BrowserSession the caller owns and
+    keeps open across tasks (the voice app): this run uses it and leaves
+    Chrome open at the end, so a video it started keeps playing. Without it,
+    each run starts its own and closes it, as before.
     """
     logger = TaskLogger(LOGS_DIR, task)
     user_confirm = confirm_callback or ask_confirmation
@@ -162,7 +168,9 @@ def run_task(
             return user_confirm(prompt)
         finally:
             confirm_wait["ms"] += (time.perf_counter() - started) * 1000
-    session = BrowserSession(config)  # Chrome itself isn't launched until first use -- see BrowserToolProvider.ensure_ready
+    session = browser_session or BrowserSession(config)  # Chrome isn't launched until first use -- see BrowserToolProvider.ensure_ready
+    if browser_session is not None and browser_session.page is not None and not browser_session.is_alive():
+        browser_session.reset()  # closed since the last task
     excel_session = ExcelSession()
     windows_session: WindowsSession | None = None  # set below only if ENABLE_WINDOWS_AUTOMATION
     mcp_providers: list[MCPToolProvider] = []  # only non-empty per ENABLE_MCP_* flags -- closed in the finally below
@@ -538,7 +546,8 @@ def run_task(
         error_message = str(e)
         logger.error(error_message)
     finally:
-        session.stop()
+        if browser_session is None:
+            session.stop()  # a caller-owned session stays open (see browser_session above)
         excel_session.close()
         if hasattr(llm, "close"):
             llm.close()

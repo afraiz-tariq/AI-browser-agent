@@ -545,3 +545,22 @@ def test_a_broken_app_window_backend_means_the_small_window_not_a_crash(monkeypa
 
     monkeypatch.setattr(builtins, "__import__", failing)
     assert "Python.Runtime.Loader.Initialize" in app_window_problem()
+
+
+def test_the_app_keeps_one_browser_across_tasks_unless_turned_off():
+    from types import SimpleNamespace
+
+    runs = []
+    keep = SimpleNamespace(keep_browser_open=True)
+    assistant = VoiceAssistant(keep, lambda a: "", lambda t: None, lambda s, a=None: None,
+                               lambda *a, **k: runs.append(k["browser_session"]) or {"success": True, "result": "ok"},
+                               log=lambda m: None)
+    assistant.handle_text("open youtube and play something")
+    assistant.handle_text("pause it")
+    assert runs[0] is not None and runs[0] is runs[1]  # the same Chrome both times, never closed by a task
+
+    off = VoiceAssistant(SimpleNamespace(keep_browser_open=False), lambda a: "", lambda t: None,
+                         lambda s, a=None: None, lambda *a, **k: runs.append(k["browser_session"]) or {"success": True},
+                         log=lambda m: None)
+    off.handle_text("open youtube")
+    assert runs[-1] is None

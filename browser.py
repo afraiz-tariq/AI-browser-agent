@@ -251,6 +251,35 @@ class BrowserSession:
         finally:
             if self._playwright:
                 self._playwright.stop()
+            self._playwright = self.context = self.browser = self.page = None
+
+    def is_alive(self) -> bool:
+        """Whether Chrome is still there to use -- for a session kept open
+        across tasks (the voice app), where the person may have closed the tab
+        or the whole window in between. A closed tab with others still open
+        switches to the last open one."""
+        if self.page is None:
+            return False
+        try:
+            if not self.page.is_closed():
+                return True
+            open_pages = [p for p in (self.context.pages if self.context else []) if not p.is_closed()]
+        except Exception:  # noqa: BLE001 -- the browser is gone
+            return False
+        if not open_pages:
+            return False
+        self.page = open_pages[-1]
+        self.page.set_default_timeout(self.config.step_timeout_ms)
+        return True
+
+    def reset(self) -> None:
+        """Forget a Chrome that's gone, quietly, so the next use starts a new one."""
+        try:
+            self.stop()
+        except Exception:  # noqa: BLE001 -- it was already closed
+            self._playwright = self.context = self.browser = self.page = None
+        self._text_offset = 0
+        self._observed_url = None
 
     # ------------------------------------------------------------------
     # Actions
@@ -554,7 +583,9 @@ class BrowserToolProvider(ToolProvider):
         # task start -- a task that never touches the browser arm (a pure
         # Excel task) should never see a Chrome window pop up at all.
         if self.session.page is not None:
-            return
+            if self.session.is_alive():
+                return
+            self.session.reset()  # the person closed Chrome since the last task: open a fresh one
         try:
             self.session.start()
         except Exception as e:
