@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 418 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 499 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -201,6 +201,8 @@ call for that window -- mirrors the browser arm's `observe()` ->
 - `windows_click_controls(window_title, indices)` -- several clicks in one step, in order (e.g. Calculator 3, +, 2, =); **dynamic** like a single click: R2 if any control in the sequence looks sensitive, else R0.
 - `windows_type_into_control(window_title, index, text)` -- R1. Reports the text read back from the control (never for password boxes) and the window's new title if typing renamed it (e.g. `*hello world - Notepad`).
 - `windows_read_control_text(window_title, index)` -- R0.
+- `windows_press_keys(window_title, keys)` -- keyboard shortcuts, e.g. `ctrl+n` for a new empty Notepad tab. **Each key is classified:** moving around, new tab, find, copy are R0; backspace/undo R1; enter, delete, save, close, paste, print R2 (asks by default); anything unlisted (e.g. `alt+tab`, the Windows key) R3, always asks. A sequence takes its riskiest key's tier.
+- Clicks, typing and key presses **return the window's fresh control list** ("Now -- Controls in ..."), so the model doesn't need a `windows_list_controls` step after each action.
 - `windows_screenshot(window_title?)` -- R1. Saves the whole screen (or one window) as a new PNG in `output/screenshots/`; never overwrites, never sent anywhere. Needs `pip install pillow`. The model is told not to use the Snipping Tool: its capture overlay waits for a mouse drag this arm can't do.
 - `windows_close_window(window_title)` -- R2.
 
@@ -464,14 +466,36 @@ Windows arm (only works once `ENABLE_WINDOWS_AUTOMATION=true` -- see
 Control the agent by talking to it (Windows):
 
 ```
-pip install faster-whisper sounddevice pyttsx3 pystray pillow
+pip install faster-whisper sounddevice pyttsx3 pystray pillow pywebview
 python voice.py
 ```
 
 **No terminal needed:** double-click `start_voice.bat` in the project
-folder (it uses the project's own `.venv`, nothing to activate). It runs
-without a terminal window, as a **small floating window** in the
-bottom-right corner plus an **icon by the clock**:
+folder (it uses the project's own `.venv`, nothing to activate). It opens
+the **app window** (needs `pip install pywebview`):
+
+- **A chat-style feed** of each task: what you asked, every step as it
+  happens (with a tick and how long it took), approval cards, the result.
+- **Pause / Take over / Stop** at the top while a task runs. *Take over*
+  pauses the agent so you can do something on the screen yourself, then
+  press **Continue**.
+- **Talk to it mid-task:** type in the box while it works ("no, use the
+  other tab") -- it reads your message before its next step.
+- **It can ask you:** when it truly needs something only you know ("ABC
+  News or the ABC song?"), a question card appears; answer by typing or
+  speaking.
+- **Login walls:** "Your turn" -- log in or solve the CAPTCHA in Chrome
+  yourself, then press Continue. The agent never does that part.
+- **History** of past tasks on the left (from `output/`); click one to see
+  its steps and result, or run it again.
+- **Compact mode** (the button top-right): a small always-on-top window
+  with the status, current step, Yes/No and a box -- handy while the agent
+  drives the screen. The expand button brings the full window back.
+- Closing the window hides it to the icon by the clock (right-click it:
+  Show window, Pause microphone, Open log, Quit).
+
+Without pywebview it falls back to the small floating window described
+below:
 
 - The window shows what it heard, the step it's on ("Step 2: typing 'ABC'
   into the search box"), and the result. Drag it anywhere; `–` hides it,

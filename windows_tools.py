@@ -48,7 +48,9 @@ Two things found only by testing against real windows (Notepad, Calculator
   reference returned the PRE-click value. windows_list_controls must be
   called again after an action, before reading a control affected by it --
   this is documented in the tool descriptions below for the model, mirroring
-  browser.py's observe-after-act pattern.
+  browser.py's observe-after-act pattern. Since 2026-09-25 every click, type
+  and key press returns that fresh listing itself (_state_after), so the
+  model no longer spends a step on it.
 - click_control originally used click_input() (real synthetic mouse input
   at the control's on-screen coordinates) -- but that requires the target
   window to be focused/foreground/unobscured, and a full end-to-end run
@@ -180,6 +182,17 @@ def _escape_for_type_keys(text: str) -> str:
 
 
 # Extends browser.py's SENSITIVE_KEYWORDS (submit/buy/delete/...) with
+# This project's own windows (the voice app, app_ui.py / voice_ui.py). The
+# arm never lists or touches them: the app's text box sends messages that
+# land in the trusted TASK slot, so an agent able to type there -- say, told
+# to by a web page -- could instruct itself as if it were the person.
+OWN_WINDOW_TITLES = frozenset({"AI Agent", "AI Agent (compact)", "AI Agent voice"})
+
+
+def is_own_window(title: str) -> bool:
+    return (title or "").strip() in OWN_WINDOW_TITLES
+
+
 SCREENSHOT_DIR = OUTPUT_DIR / "screenshots"
 
 
@@ -214,6 +227,73 @@ WINDOWS_EXTRA_SENSITIVE_KEYWORDS = (
 SENSITIVE_KEYWORDS = BROWSER_SENSITIVE_KEYWORDS + WINDOWS_EXTRA_SENSITIVE_KEYWORDS
 
 
+# --- windows_press_keys: keyboard shortcuts, each one risk-classified -----------
+#
+# Added 2026-09-25 after comparing with ChatGPT's computer use on the same
+# "open notepad and write ..." task: it pressed Ctrl+N for a fresh tab,
+# which this arm had no way to do -- Windows 11 Notepad reopens old tabs,
+# and our run looped. Every chord is classified here, in code (the "new
+# actions start at R3" rule); a sequence takes its riskiest chord's tier.
+# Anything not listed is R3 and always asks.
+KEY_R0 = frozenset({
+    # moving around / new empty things / finding / copying -- change nothing
+    "tab", "shift+tab", "esc", "up", "down", "left", "right", "home", "end", "pageup", "pagedown",
+    "ctrl+home", "ctrl+end", "shift+up", "shift+down", "shift+left", "shift+right", "shift+home", "shift+end",
+    "ctrl+n", "ctrl+t", "ctrl+tab", "ctrl+shift+tab", "ctrl+f", "ctrl+a", "ctrl+c",
+})
+KEY_R1 = frozenset({"backspace", "ctrl+z", "ctrl+y"})  # small edits, undoable
+KEY_R2 = frozenset({
+    # can submit, save, close, delete, paste unknown content, print, or press a focused button
+    "enter", "delete", "space", "ctrl+s", "ctrl+shift+s", "ctrl+w", "alt+f4", "ctrl+x", "ctrl+v", "ctrl+p", "f5",
+})
+_KEY_NAMES = {
+    "enter": "{ENTER}", "return": "{ENTER}", "tab": "{TAB}", "esc": "{ESC}", "escape": "{ESC}",
+    "backspace": "{BACKSPACE}", "delete": "{DELETE}", "del": "{DELETE}", "space": "{SPACE}",
+    "up": "{UP}", "down": "{DOWN}", "left": "{LEFT}", "right": "{RIGHT}", "home": "{HOME}", "end": "{END}",
+    "pageup": "{PGUP}", "pagedown": "{PGDN}", **{f"f{n}": f"{{F{n}}}" for n in range(1, 13)},
+}
+_KEY_ALIASES = {"return": "enter", "escape": "esc", "del": "delete"}
+_MODIFIERS = {"ctrl": "^", "control": "^", "alt": "%", "shift": "+"}
+_MOD_ORDER = ("ctrl", "alt", "shift")
+
+
+def parse_chord(chord: str) -> tuple[str, str]:
+    """'Ctrl+N' -> ('ctrl+n', '^n'): the normalized name the risk tables use,
+    and pywinauto's type_keys syntax. Raises ValueError for anything else --
+    including the Windows key, which this arm never presses."""
+    parts = [p for p in (chord or "").lower().replace(" ", "").split("+") if p]
+    if not parts:
+        raise ValueError("empty key")
+    *mods, key = parts
+    mods = ["ctrl" if m == "control" else m for m in mods]
+    if any(m not in _MODIFIERS for m in mods) or len(set(mods)) != len(mods):
+        raise ValueError(f"unsupported modifier in {chord!r} (use ctrl, alt, shift)")
+    key = _KEY_ALIASES.get(key, key)
+    if key in _KEY_NAMES:
+        code = _KEY_NAMES[key]
+    elif len(key) == 1 and key.isalnum():
+        code = key
+    else:
+        raise ValueError(f"unsupported key {key!r} in {chord!r}")
+    ordered = [m for m in _MOD_ORDER if m in mods]
+    return "+".join(ordered + [key]), "".join(_MODIFIERS[m] for m in ordered) + code
+
+
+def key_risk(keys: list[str]) -> str:
+    """The tier for a whole sequence: its riskiest chord. Unknown or
+    unparseable -> R3."""
+    rank = {"R0": 0, "R1": 1, "R2": 2, "R3": 3}
+    worst = "R0"
+    for chord in keys or ["?"]:
+        try:
+            name, _ = parse_chord(str(chord))
+        except ValueError:
+            return "R3"
+        tier = "R0" if name in KEY_R0 else "R1" if name in KEY_R1 else "R2" if name in KEY_R2 else "R3"
+        worst = tier if rank[tier] > rank[worst] else worst
+    return worst
+
+
 # Registered into llm.py's flat tool list alongside the other arms' specs --
 # see WindowsToolProvider.get_tool_specs(). risk_level here is the STATIC/
 # base tier; windows_click_control starts at R0 and gets escalated at call
@@ -241,10 +321,9 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
         "description": "List the indexed controls (buttons, text fields, ...) inside one window, by title. "
                         "Call this before windows_click_control / windows_type_into_control / "
                         "windows_read_control_text -- their 'index' argument refers to the list this returns, "
-                        "and only to the MOST RECENT call for that exact window_title. Also call this again "
-                        "AFTER any click/type action before reading a control's text -- some apps replace a "
-                        "control's underlying element when its content changes (e.g. a calculator's result "
-                        "display), so a reference from before the action can report stale, pre-action text.",
+                        "and only to the MOST RECENT listing for that exact window_title. Clicks, typing and key "
+                        "presses already return a fresh listing ('Now -- Controls in ...'), which counts as the "
+                        "most recent one -- so you rarely need to call this after an action.",
         "properties": {
             "window_title": {
                 "type": "string",
@@ -259,7 +338,8 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
         "risk_level": "R0",
     },
     "windows_click_control": {
-        "description": "Click a control by index from the most recent windows_list_controls call for this window.",
+        "description": "Click a control by index from the most recent listing for this window. The result "
+                        "includes the window's fresh control list.",
         "properties": {
             "window_title": {
                 "type": "string",
@@ -275,8 +355,8 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
         "description": "Click SEVERAL controls of one window in order, in a single step -- e.g. Calculator's "
                         "keys 3, +, 2, = -- instead of one windows_click_control per step. Indices come from "
                         "the most recent windows_list_controls for this window. Stops at the first control "
-                        "that can't be clicked and reports how far it got. Call windows_list_controls "
-                        "afterwards to read any result it produced.",
+                        "that can't be clicked and reports how far it got. The result includes the window's "
+                        "fresh control list, so any result it produced (e.g. a display) is in there.",
         "properties": {
             "window_title": {
                 "type": "string",
@@ -293,8 +373,31 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
         # finds a sensitive-looking control anywhere in the sequence (then R2).
         "risk_level": "R0",
     },
+    "windows_press_keys": {
+        "description": "Press keyboard shortcuts in a window, in order -- e.g. ['ctrl+n'] for a new empty tab or "
+                        "document, ['ctrl+f'] to find, ['tab'], ['esc']. Use it for app commands that have a "
+                        "shortcut instead of hunting for a menu. Keys that save, close, delete, submit or paste "
+                        "(enter, ctrl+s, alt+f4, delete, ctrl+v, ...) ask the person first. The result includes "
+                        "the window's fresh control list.",
+        "properties": {
+            "window_title": {
+                "type": "string",
+                "description": "The window's EXACT title from windows_list_windows or a previous result.",
+            },
+            "keys": {
+                "type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 5,
+                "description": "Chords like 'ctrl+n', 'shift+tab', 'esc', 'enter', 'f5'. Modifiers: ctrl, alt, "
+                               "shift. To type text, use windows_type_into_control instead.",
+            },
+        },
+        "required": ["window_title", "keys"],
+        # Base tier R3 (unclassified); get_dynamic_risk() lowers it chord by
+        # chord from KEY_R0 / KEY_R1 / KEY_R2 above.
+        "risk_level": "R3",
+    },
     "windows_type_into_control": {
-        "description": "Type text into a control by index from the most recent windows_list_controls call.",
+        "description": "Type text into a control by index from the most recent listing. The result reads the "
+                        "text back and includes the window's fresh control list.",
         "properties": {
             "window_title": {
                 "type": "string",
@@ -309,8 +412,7 @@ WINDOWS_ACTION_SPECS: dict[str, dict[str, Any]] = {
     },
     "windows_read_control_text": {
         "description": "Read the current text/value of a control by index from the most recent "
-                        "windows_list_controls call. If a click/type action happened since that listing, "
-                        "call windows_list_controls again first -- see its description for why.",
+                        "listing (an action's fresh listing counts).",
         "properties": {
             "window_title": {
                 "type": "string",
@@ -418,12 +520,25 @@ class WindowsSession:
             windows = Desktop(backend="uia").windows()
         except Exception as e:
             raise WindowsAutomationError(f"Could not list open windows: {e}") from e
-        titles = sorted({w.window_text() for w in windows if w.window_text()})
+        titles = sorted({w.window_text() for w in windows if w.window_text() and not is_own_window(w.window_text())})
         if not titles:
             return "No open windows with a title were found."
         return "Open windows: " + "; ".join(titles)
 
     def _connect_window(self, window_title: str):
+        window = self._find_window(window_title)
+        try:
+            actual = window.window_text()
+        except Exception:
+            actual = window_title
+        if is_own_window(window_title) or is_own_window(actual):
+            raise WindowsAutomationError(
+                f"'{actual}' is this agent's own window; the Windows tools don't act on it. "
+                "Pick another window from windows_list_windows."
+            )
+        return window
+
+    def _find_window(self, window_title: str):
         from pywinauto.application import Application
 
         # Exact match first: if window_title is a real title returned by
@@ -514,7 +629,62 @@ class WindowsSession:
         except Exception:
             return ""
 
+    MAX_STATE_LINES = 80
+
+    def _state_after(self, window_title: str, title_now=None) -> str:
+        """The window's fresh control list, appended to an action's result --
+        the way ChatGPT's computer use returns the new state with every
+        action -- so the model doesn't spend a step on windows_list_controls,
+        and the indices it sees are always current. Never fails the action."""
+        title = title_now if isinstance(title_now, str) and title_now else window_title
+        try:
+            listing = self._do_windows_list_controls({"window_title": title})
+        except Exception as e:  # noqa: BLE001
+            return f"\n(Couldn't refresh the window's controls: {e}. Call windows_list_controls.)"
+        lines = listing.splitlines()
+        if len(lines) > self.MAX_STATE_LINES + 1:
+            more = len(lines) - 1 - self.MAX_STATE_LINES
+            lines = lines[: self.MAX_STATE_LINES + 1] + [f"... {more} more (windows_list_controls shows all)"]
+        return "\nNow -- " + "\n".join(lines)
+
+    @staticmethod
+    def _title_of(ctrl):
+        try:
+            return ctrl.top_level_parent().window_text()
+        except Exception:  # noqa: BLE001
+            return None
+
     def _do_windows_click_control(self, args: dict) -> str:
+        result = self._click_one(args)
+        ctrl = self._resolve_control(args["window_title"], int(args["index"]))
+        return result + self._state_after(args["window_title"], self._title_of(ctrl))
+
+    def _do_windows_press_keys(self, args: dict) -> str:
+        window_title = args["window_title"]
+        chords = [parse_chord(str(k)) for k in (args.get("keys") or [])][:5]
+        if not chords:
+            raise WindowsAutomationError("No keys given.")
+        window = self._connect_window(window_title)
+        try:
+            target = window.wrapper_object() if hasattr(window, "wrapper_object") else window
+            target.set_focus()
+            time.sleep(_FOCUS_SETTLE_DELAY_S)
+            for _, code in chords:
+                target.type_keys(code, set_foreground=True, pause=_TYPE_KEYS_PAUSE_S)
+                time.sleep(0.3)  # let the app react (Ctrl+N opens a tab) before the next key or the refresh
+        except Exception as e:
+            raise WindowsAutomationError(f"Could not press keys in '{window_title}': {e}") from e
+        try:
+            title_now = target.window_text()
+        except Exception:  # noqa: BLE001
+            title_now = None
+        pressed = ", ".join(name for name, _ in chords)
+        note = f"Pressed {pressed} in '{window_title}'."
+        if isinstance(title_now, str) and title_now and title_now != window_title:
+            note += f" The window's title is now '{title_now}'."
+        return note + self._state_after(window_title, title_now)
+
+    def _click_one(self, args: dict) -> str:
         window_title = args["window_title"]
         index = int(args["index"])
         ctrl = self._resolve_control(window_title, index)
@@ -548,7 +718,7 @@ class WindowsSession:
         clicked: list[str] = []
         for index in indices:
             try:
-                self._do_windows_click_control({"window_title": window_title, "index": index})
+                self._click_one({"window_title": window_title, "index": index})
             except (WindowsAutomationError, IndexError) as e:
                 done = ", ".join(clicked) or "none"
                 raise WindowsAutomationError(
@@ -556,7 +726,8 @@ class WindowsSession:
                 ) from e
             label = " ".join(self.get_control_text(window_title, index).split())[:40]
             clicked.append(f"#{index} '{label}'" if label else f"#{index}")
-        return f"Clicked in order in '{window_title}': {', '.join(clicked)}."
+        result = f"Clicked in order in '{window_title}': {', '.join(clicked)}."
+        return result + self._state_after(window_title, self._title_of(self._resolve_control(window_title, indices[-1])))
 
     def _do_windows_type_into_control(self, args: dict) -> str:
         window_title = args["window_title"]
@@ -585,7 +756,8 @@ class WindowsSession:
             # (e.g. genuinely not focusable) but does support UIA's Value
             # pattern directly.
             ctrl.set_edit_text(text)
-        return self._report_after_typing(window_title, index, ctrl, text)
+        return self._report_after_typing(window_title, index, ctrl, text) + self._state_after(
+            window_title, self._title_of(ctrl))
 
     def _report_after_typing(self, window_title: str, index: int, ctrl, text: str) -> str:
         """Say what the control now holds and whether the window's title
@@ -719,6 +891,8 @@ class WindowsToolProvider(ToolProvider):
             title = args.get("window_title")
             labels = [self.session.get_control_text(title, int(i)) or f"#{i}" for i in args.get("indices", [])]
             return f"click these controls in order in '{title}': " + ", ".join(repr(label) for label in labels)
+        if name == "windows_press_keys":
+            return f"press {', '.join(str(k) for k in args.get('keys') or [])} in '{args.get('window_title')}'"
         if name == "windows_type_into_control":
             return f"type into control #{args.get('index')} in '{args.get('window_title')}'"
         if name == "windows_screenshot":
@@ -739,6 +913,8 @@ class WindowsToolProvider(ToolProvider):
         # risk_level in WINDOWS_ACTION_SPECS. windows_launch_app does too,
         # except a plain launch of a safe-listed app (DEFAULT_SAFE_APPS /
         # SAFE_APPS), which is R0.
+        if name == "windows_press_keys":
+            return key_risk([str(k) for k in args.get("keys") or []])
         if name == "windows_launch_app":
             path = str(args.get("path", ""))
             is_bare_name = path.strip() and not re.search(r"[\\/:]", path)

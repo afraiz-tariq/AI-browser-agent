@@ -31,14 +31,14 @@ class _FakeConfig:
         self.confirm_r1_actions = confirm_r1_actions
 
 
-def test_get_tool_specs_returns_nine_actions_with_expected_static_risk_tiers():
+def test_get_tool_specs_returns_ten_actions_with_expected_static_risk_tiers():
     # windows_click_control's static tier is R0 -- its real risk is dynamic
     # (see get_dynamic_risk() tests below), mirroring browser.py's click.
     specs = {s.name: s for s in WindowsToolProvider(WindowsSession()).get_tool_specs()}
     assert set(specs) == {
         "windows_launch_app", "windows_list_windows", "windows_list_controls",
         "windows_click_control", "windows_click_controls", "windows_type_into_control",
-        "windows_read_control_text", "windows_screenshot", "windows_close_window",
+        "windows_read_control_text", "windows_screenshot", "windows_close_window", "windows_press_keys",
     }
     expected_tiers = {
         "windows_launch_app": "R2",
@@ -49,6 +49,7 @@ def test_get_tool_specs_returns_nine_actions_with_expected_static_risk_tiers():
         "windows_type_into_control": "R1",
         "windows_read_control_text": "R0",
         "windows_screenshot": "R1",  # only ever a new file in the agent's own output folder
+        "windows_press_keys": "R3",  # unclassified until each chord is checked, see get_dynamic_risk
         "windows_close_window": "R2",
     }
     for name, expected in expected_tiers.items():
@@ -595,3 +596,131 @@ def test_screenshot_is_r1_so_it_never_asks_unless_r1_confirmation_is_on():
     assert provider.get_dynamic_risk("windows_screenshot", {}) is None  # static R1 stands
     assert requires_confirmation("R1", _FakeConfig(confirm_r1_actions=False)) is False
     assert requires_confirmation("R1", _FakeConfig(confirm_r1_actions=True)) is True
+
+
+# --- the agent's own windows are off limits -------------------------------------
+
+@pytest.mark.parametrize("title, own", [
+    ("AI Agent", True), ("AI Agent (compact)", True), ("AI Agent voice", True), (" AI Agent ", True),
+    ("Untitled - Notepad", False), ("AI Agent docs - Google Chrome", False),
+])
+def test_own_windows_are_recognised_by_exact_title(title, own):
+    assert windows_tools.is_own_window(title) is own
+
+
+def test_the_agent_cannot_connect_to_its_own_window(monkeypatch):
+    session = WindowsSession()
+    fake = MagicMock()
+    fake.window_text.return_value = "AI Agent"
+    monkeypatch.setattr(session, "_find_window", lambda title: fake)
+    with pytest.raises(WindowsAutomationError, match="own window"):
+        session._connect_window("Agent")  # a guessed substring that lands on the app
+
+
+def test_its_own_windows_are_left_out_of_the_list(monkeypatch):
+    windows = [MagicMock(), MagicMock(), MagicMock()]
+    for w, title in zip(windows, ["AI Agent", "Untitled - Notepad", "AI Agent (compact)"]):
+        w.window_text.return_value = title
+    desktop = MagicMock()
+    desktop.return_value.windows.return_value = windows
+    monkeypatch.setattr(sys.modules["pywinauto"], "Desktop", desktop, raising=False)
+    assert WindowsSession().execute("windows_list_windows", {}) == "Open windows: Untitled - Notepad"
+
+
+# --- windows_press_keys: shortcuts, each one classified ---------------------------
+
+from tool_provider import requires_confirmation as _needs_confirm  # noqa: E402
+
+
+@pytest.mark.parametrize("chord, name, code", [
+    ("Ctrl+N", "ctrl+n", "^n"), ("ctrl + shift + tab", "ctrl+shift+tab", "^+{TAB}"),
+    ("shift+ctrl+s", "ctrl+shift+s", "^+s"), ("Escape", "esc", "{ESC}"), ("alt+F4", "alt+f4", "%{F4}"),
+    ("control+a", "ctrl+a", "^a"), ("Return", "enter", "{ENTER}"),
+])
+def test_chords_are_normalized_and_translated(chord, name, code):
+    assert windows_tools.parse_chord(chord) == (name, code)
+
+
+@pytest.mark.parametrize("chord", ["win+r", "super+l", "ctrl+ctrl+a", "ctrl+", "ctrl+{DEL}", "ctrl+hello", ""])
+def test_anything_else_is_rejected(chord):
+    with pytest.raises(ValueError):
+        windows_tools.parse_chord(chord)
+
+
+@pytest.mark.parametrize("keys, tier", [
+    (["ctrl+n"], "R0"), (["tab", "down", "esc"], "R0"), (["ctrl+f"], "R0"),
+    (["backspace"], "R1"), (["ctrl+z"], "R1"),
+    (["enter"], "R2"), (["ctrl+s"], "R2"), (["alt+f4"], "R2"), (["delete"], "R2"), (["ctrl+v"], "R2"),
+    (["ctrl+n", "enter"], "R2"),     # a sequence is as risky as its riskiest key
+    (["alt+tab"], "R3"), (["ctrl+shift+esc"], "R3"), (["win+r"], "R3"), ([], "R3"),  # unclassified: always ask
+])
+def test_each_shortcut_has_a_tier_and_unknown_ones_always_ask(keys, tier):
+    provider = WindowsToolProvider(WindowsSession())
+    assert provider.get_dynamic_risk("windows_press_keys", {"window_title": "x", "keys": keys}) == tier
+
+
+def test_saving_asks_by_default_and_a_new_tab_never_does():
+    config = _FakeConfig(confirm_sensitive_actions=True, confirm_r1_actions=False)
+    assert _needs_confirm(windows_tools.key_risk(["ctrl+s"]), config) is True
+    assert _needs_confirm(windows_tools.key_risk(["ctrl+n"]), config) is False
+    unlocked = _FakeConfig(confirm_sensitive_actions=False, confirm_r1_actions=False)
+    assert _needs_confirm(windows_tools.key_risk(["win+r"]), unlocked) is True  # R3: no flag turns it off
+
+
+def _window_with_controls(title, texts):
+    window = MagicMock()
+    window.window_text.return_value = title
+    window.wrapper_object.return_value = window
+    controls = []
+    for text in texts:
+        ctrl = MagicMock()
+        ctrl.window_text.return_value = text
+        ctrl.friendly_class_name.return_value = "Edit"
+        ctrl.is_password.return_value = False
+        ctrl.top_level_parent.return_value = window
+        controls.append(ctrl)
+    window.descendants.return_value = controls
+    return window
+
+
+def test_ctrl_n_is_pressed_and_the_fresh_controls_come_back(monkeypatch):
+    session = WindowsSession()
+    window = _window_with_controls("Untitled - Notepad", ["", "Text editor"])
+    monkeypatch.setattr(session, "_find_window", lambda title: window)
+    monkeypatch.setattr(windows_tools.time, "sleep", lambda s: None)
+    result = session.execute("windows_press_keys", {"window_title": "*hello - Notepad", "keys": ["ctrl+n"]})
+    window.type_keys.assert_called_once()
+    assert window.type_keys.call_args.args[0] == "^n"
+    assert "Pressed ctrl+n" in result and "title is now 'Untitled - Notepad'" in result
+    assert "Now -- Controls in 'Untitled - Notepad'" in result and "[1] Edit 'Text editor'" in result
+    # the indices it just saw are usable straight away, under the new title
+    assert session._resolve_control("Untitled - Notepad", 1).window_text() == "Text editor"
+
+
+def test_keys_are_never_sent_to_the_agents_own_window(monkeypatch):
+    session = WindowsSession()
+    window = _window_with_controls("AI Agent", [])
+    monkeypatch.setattr(session, "_find_window", lambda title: window)
+    with pytest.raises(WindowsAutomationError, match="own window"):
+        session.execute("windows_press_keys", {"window_title": "AI Agent", "keys": ["ctrl+n"]})
+    window.type_keys.assert_not_called()
+
+
+def test_a_click_returns_the_fresh_state_too(monkeypatch):
+    session = WindowsSession()
+    window = _window_with_controls("Calculator", [f"key {i}" for i in range(100)])
+    monkeypatch.setattr(session, "_find_window", lambda title: window)
+    session.execute("windows_list_controls", {"window_title": "Calculator"})
+    result = session.execute("windows_click_control", {"window_title": "Calculator", "index": 3})
+    assert result.startswith("Clicked control #3") and "Now -- Controls in 'Calculator'" in result
+    assert "... 20 more (windows_list_controls shows all)" in result  # long lists are capped
+
+
+def test_a_failed_refresh_never_fails_the_action(monkeypatch):
+    session = WindowsSession()
+    window = _window_with_controls("Calculator", ["1", "2"])
+    monkeypatch.setattr(session, "_find_window", lambda title: window)
+    session.execute("windows_list_controls", {"window_title": "Calculator"})
+    window.descendants.side_effect = RuntimeError("UIA busy")
+    result = session.execute("windows_click_control", {"window_title": "Calculator", "index": 0})
+    assert "Clicked control #0" in result and "Couldn't refresh" in result
