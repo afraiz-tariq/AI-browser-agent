@@ -14,6 +14,12 @@ full commit message.
 
 ## 2026-09-25
 
+- Fix for the exe: Playwright's browser driver (a Node.js program inside
+  the playwright package) wasn't bundled -- PyInstaller has no rule for it
+  and the import check still passed -- so browser tasks would have failed in
+  `AI Agent.exe`. `ai_agent.spec` now collects `playwright` in full, and
+  `--check-install` (run by the build job) fails if the driver is missing.
+
 - Double-click app: `AI Agent.exe` (PyInstaller, `ai_agent.spec` /
   `build_exe.bat`, or the *Build Windows app* GitHub action, which builds
   and checks it on Windows). `.env`, logs and output live next to the exe

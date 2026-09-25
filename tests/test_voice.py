@@ -314,9 +314,23 @@ def test_first_run_of_the_exe_copies_env_example_next_to_it(tmp_path):
 
 
 def test_check_install_fails_only_on_a_missing_required_module(capsys):
-    assert check_install(required=("json",), optional=("no_such_module_xyz",)) == 0
-    assert check_install(required=("json", "no_such_module_xyz"), optional=()) == 1
+    assert check_install(required=("json",), optional=("no_such_module_xyz",), driver_check=None) == 0
+    assert check_install(required=("json", "no_such_module_xyz"), optional=(), driver_check=None) == 1
     assert "MISSING  no_such_module_xyz" in capsys.readouterr().out
+
+
+def test_check_install_fails_when_the_browser_driver_is_missing(capsys):
+    # The first exe build: playwright imported fine, but its Node.js driver
+    # wasn't bundled, so browser tasks would all have failed.
+    assert check_install(required=("json",), optional=(), driver_check=lambda: "not found: node.exe") == 1
+    assert "MISSING  the browser driver" in capsys.readouterr().out
+    assert check_install(required=("json",), optional=(), driver_check=lambda: None) == 0
+
+
+def test_the_real_driver_check_finds_this_machines_playwright():
+    from voice import playwright_driver_problem
+
+    assert playwright_driver_problem() is None
 
 
 def test_the_launcher_script_runs_voice_with_the_projects_own_python():

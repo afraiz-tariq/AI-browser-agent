@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 499 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 504 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 

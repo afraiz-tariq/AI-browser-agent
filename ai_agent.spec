@@ -21,7 +21,10 @@ project_modules = [
 ]
 # Optional packages the app imports lazily; each is bundled when installed
 # (build_exe.bat installs them all).
-optional = ["anthropic", "openai", "faster_whisper", "sounddevice", "pyttsx3", "pystray", "webview", "pywinauto",
+# "playwright" must be collected in full: its driver (a Node.js program in
+# playwright/driver) is data, not an import, and PyInstaller has no rule for
+# it -- without it the exe starts fine but every browser task fails.
+optional = ["playwright", "anthropic", "openai", "faster_whisper", "sounddevice", "pyttsx3", "pystray", "webview", "pywinauto",
             "comtypes", "PIL", "openpyxl", "discord", "httpx"]
 
 datas = [("ui", "ui"), (".env.example", ".")]

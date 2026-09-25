@@ -740,7 +740,24 @@ REQUIRED_MODULES = ("agent", "app_ui", "voice_ui", "playwright.sync_api", "anthr
 OPTIONAL_MODULES = ("openai", "webview", "pystray", "faster_whisper", "sounddevice", "pyttsx3", "pywinauto")
 
 
-def check_install(required=REQUIRED_MODULES, optional=OPTIONAL_MODULES) -> int:
+def playwright_driver_problem() -> str | None:
+    """None if Playwright's driver (a Node.js program in the playwright
+    package, which is what actually drives Chrome) is present; otherwise what's
+    missing. Importing playwright works without it, so the module check alone
+    would pass an exe whose every browser task fails -- PyInstaller has no
+    built-in rule for Playwright, and the first exe build left it out."""
+    try:
+        from playwright._impl._driver import compute_driver_executable
+
+        paths = compute_driver_executable()
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}: {e}"
+    paths = paths if isinstance(paths, (tuple, list)) else (paths,)
+    missing = [str(p) for p in paths if not Path(p).exists()]
+    return ("not found: " + ", ".join(missing)) if missing else None
+
+
+def check_install(required=REQUIRED_MODULES, optional=OPTIONAL_MODULES, driver_check=playwright_driver_problem) -> int:
     """Import every module the app needs, print what loaded, and return an
     exit code: 1 if a required one is missing. Lets the build check that
     AI Agent.exe really carries everything its lazy imports reach for."""
@@ -766,6 +783,12 @@ def check_install(required=REQUIRED_MODULES, optional=OPTIONAL_MODULES) -> int:
             continue
         failed = failed or name in required
         print(f"  {'MISSING' if name in required else 'missing'}  {name}  ({type(errors[0]).__name__}: {errors[0]})")
+    problem = driver_check() if driver_check else None
+    if problem:
+        failed = True
+        print(f"  MISSING  the browser driver (playwright's Node.js part)  ({problem})")
+    elif driver_check:
+        print("  ok       the browser driver")
     print("check-install:", "FAILED" if failed else "ok")
     return 1 if failed else 0
 
