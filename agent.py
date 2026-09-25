@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Callable
 
 from browser import BrowserSession, BrowserToolProvider
-from config import OUTPUT_DIR, load_config
+from config import LOGS_DIR, OUTPUT_DIR, load_config
 from errors import TaskCannotBeCompleted, explain
 from excel_tools import ExcelSession, ExcelToolProvider
 from llm import ZERO_USAGE, LLMClient, LLMError
@@ -150,7 +150,7 @@ def run_task(
     - `handoff(message)` replaces the terminal prompt at a login/CAPTCHA
       wall: the person clears it, then says continue (True) or stop.
     """
-    logger = TaskLogger(Path(__file__).parent / "logs", task)
+    logger = TaskLogger(LOGS_DIR, task)
     user_confirm = confirm_callback or ask_confirmation
     # Time spent waiting on a human to answer [y/n] is not agent speed, so
     # it's measured separately and subtracted from the step's act time.

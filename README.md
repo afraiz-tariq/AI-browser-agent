@@ -317,6 +317,9 @@ ai_browser_agent/
 ├── jev.py             # Optional TypeSafe Jev decider for browser steps (DECIDER=hybrid), Claude as fallback
 ├── logger.py           # Per-task plain-text logging (with secret redaction)
 ├── config.py           # Loads and validates .env settings
+├── app_paths.py        # Where .env/logs/output live: the project folder, or next to AI Agent.exe
+├── ai_agent.spec       # PyInstaller recipe for the double-clickable AI Agent.exe
+├── build_exe.bat       # Builds dist\AI Agent\AI Agent.exe (see "Double-click app")
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
@@ -460,6 +463,41 @@ Windows arm (only works once `ENABLE_WINDOWS_AUTOMATION=true` -- see
 7. **Milestone 7** (Windows arm): set `ENABLE_WINDOWS_AUTOMATION=true`,
    `pip install pywinauto`, try task #12 above -- confirms the arm can
    launch a real app, type into it, and read back its own result.
+
+## Double-click app (`AI Agent.exe`)
+
+You can package the app as a normal Windows program, **AI Agent.exe**, that
+opens the app window when you double-click it. People who use it don't
+need Python, a `.venv` or a terminal.
+
+**Get it without building:** every push that changes the packaging, and
+the **Run workflow** button on the *Build Windows app* action on GitHub,
+builds it on a Windows machine. Download `AI-Agent-windows` from that run's
+**Artifacts** section and unzip it. Pushing a tag like `v1.0` also attaches
+the zip to a GitHub release.
+
+**Or build it yourself** (after **Installation** above): double-click
+`build_exe.bat`. It installs the app window, voice and Windows-arm packages
+plus PyInstaller into `.venv`, then builds `dist\AI Agent\`.
+
+**Using it:**
+- Keep the whole `AI Agent` folder together. The exe needs the `_internal`
+  folder next to it. Right-click `AI Agent.exe` > *Send to* > *Desktop
+  (create shortcut)* to get a desktop icon.
+- On the first run it creates a `.env` next to the exe and opens it in
+  Notepad. Put your LLM provider and API key there, save it, and start the
+  app again. `logs\`, `output\` and `chrome_profile\` go in that folder too.
+- It still drives your installed **Google Chrome**. The voice model
+  downloads once on first use, as usual.
+- `"AI Agent.exe" --autostart on` starts it at every login.
+  `"AI Agent.exe" --check-install` writes to `output\voice.log` which parts
+  loaded.
+- The MCP arms aren't in the exe (they launch separate Python/Node
+  programs); run from source for those.
+- **Giving it to someone:** zip the `AI Agent` folder, **without your own
+  `.env`** (it holds your API key). Windows SmartScreen warns about an
+  unsigned exe the first time (*More info* > *Run anyway*); a
+  code-signing certificate removes that warning.
 
 ## Voice interface
 

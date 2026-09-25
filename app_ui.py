@@ -40,11 +40,12 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from app_paths import BUNDLE_DIR
 from voice_ui import Choice, NullUi
 
 APP_TITLE = "AI Agent"
 COMPACT_TITLE = "AI Agent (compact)"
-UI_DIR = Path(__file__).resolve().parent / "ui"
+UI_DIR = BUNDLE_DIR / "ui"
 FEED_LIMIT = 400  # events kept for a window that opens later (compact <-> main)
 SPOKEN_HINT_MARK = "\n\n(This request was spoken."  # voice.SPOKEN_TASK_HINT's start, hidden in history
 
