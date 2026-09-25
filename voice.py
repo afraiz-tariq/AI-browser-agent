@@ -746,14 +746,26 @@ def check_install(required=REQUIRED_MODULES, optional=OPTIONAL_MODULES) -> int:
     AI Agent.exe really carries everything its lazy imports reach for."""
     import importlib
 
-    failed = False
-    for name in (*required, *optional):
+    def load(name: str, errors: list) -> None:
         try:
             importlib.import_module(name)
-            print(f"  ok       {name}")
         except Exception as e:  # noqa: BLE001 -- report every kind of load failure
-            failed = failed or name in required
-            print(f"  {'MISSING' if name in required else 'missing'}  {name}  ({type(e).__name__}: {e})")
+            errors.append(e)
+
+    failed = False
+    for name in (*required, *optional):
+        # Each on a fresh thread, as the app does (tasks run on a worker
+        # thread): pywinauto sets COM to single-threaded mode on import, which
+        # fails on a thread where the app window's library already chose it.
+        errors: list = []
+        thread = threading.Thread(target=load, args=(name, errors))
+        thread.start()
+        thread.join()
+        if not errors:
+            print(f"  ok       {name}")
+            continue
+        failed = failed or name in required
+        print(f"  {'MISSING' if name in required else 'missing'}  {name}  ({type(errors[0]).__name__}: {errors[0]})")
     print("check-install:", "FAILED" if failed else "ok")
     return 1 if failed else 0
 
