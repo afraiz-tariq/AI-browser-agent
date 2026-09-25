@@ -10,10 +10,13 @@ on:
   push:
     branches: ["**"]
     tags: ["v*"]
-    paths:
+    paths:  # anything that ends up inside the exe
+      - "*.py"
+      - ui/**
+      - .env.example
+      - requirements.txt
       - ai_agent.spec
       - build_exe.bat
-      - app_paths.py
       - .github/workflows/build-exe.yml
 
 permissions:

@@ -470,7 +470,7 @@ You can package the app as a normal Windows program, **AI Agent.exe**, that
 opens the app window when you double-click it. People who use it don't
 need Python, a `.venv` or a terminal.
 
-**Get it without building:** every push that changes the packaging, and
+**Get it without building:** every push that changes the app's code, and
 the **Run workflow** button on the *Build Windows app* action on GitHub,
 builds it on a Windows machine. Download `AI-Agent-windows` from that run's
 **Artifacts** section and unzip it. Pushing a tag like `v1.0` also attaches
