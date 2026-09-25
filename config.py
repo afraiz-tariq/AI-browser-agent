@@ -13,9 +13,12 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load the .env file that sits next to this file (if present). This must
-# happen before we read any os.environ values below.
-PROJECT_ROOT = Path(__file__).resolve().parent
+from app_paths import APP_DIR
+
+# Load the .env file that sits next to this file -- or next to AI Agent.exe
+# in the packaged app (app_paths.py). This must happen before we read any
+# os.environ values below.
+PROJECT_ROOT = APP_DIR
 load_dotenv(PROJECT_ROOT / ".env")
 
 LOGS_DIR = PROJECT_ROOT / "logs"

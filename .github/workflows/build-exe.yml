@@ -1,0 +1,74 @@
+name: Build Windows app
+
+# Builds the double-clickable "AI Agent.exe" (ai_agent.spec) on a Windows
+# runner -- PyInstaller can only build a Windows exe on Windows. Download
+# it from the run's "Artifacts" section. Pushing a v* tag also attaches the
+# zip to a GitHub release.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+    paths:  # anything that ends up inside the exe
+      - "*.py"
+      - ui/**
+      - .env.example
+      - requirements.txt
+      - ai_agent.spec
+      - build_exe.bat
+      - .github/workflows/build-exe.yml
+
+permissions:
+  contents: write  # only used to create the release on a v* tag
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install openai faster-whisper sounddevice pyttsx3 pystray pillow pywebview pywinauto pyinstaller
+
+      - name: Build
+        run: pyinstaller ai_agent.spec --noconfirm
+
+      - name: Check the app starts and has its files
+        shell: pwsh
+        run: |
+          $app = "dist/AI Agent"
+          foreach ($f in "AI Agent.exe", "_internal/ui/index.html", "_internal/.env.example") {
+            if (-not (Test-Path "$app/$f")) { throw "missing $f" }
+          }
+          if (Test-Path "$app/.env") { throw "a .env must never be in the build" }
+          # Loads every part of the app without opening a window; with no
+          # terminal, its report goes to output/voice.log.
+          $p = Start-Process -FilePath "$app/AI Agent.exe" -ArgumentList "--check-install" -Wait -PassThru
+          Get-Content "$app/output/voice.log"
+          if ($p.ExitCode -ne 0) { throw "AI Agent.exe --check-install exited with $($p.ExitCode)" }
+          # Everything was installed above, so an optional part missing here
+          # means the spec failed to bundle it.
+          if (Select-String -Path "$app/output/voice.log" -Pattern "^\s+missing") { throw "a part of the app is missing from the build" }
+          Remove-Item -Recurse -Force "$app/output", "$app/logs" -ErrorAction SilentlyContinue
+
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path "dist/AI Agent" -DestinationPath "AI-Agent-windows.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AI-Agent-windows
+          path: AI-Agent-windows.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" AI-Agent-windows.zip --generate-notes

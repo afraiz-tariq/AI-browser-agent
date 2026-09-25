@@ -16,3 +16,7 @@ output/*.json
 
 # Persistent Chrome profile (cookies, local login state -- never commit this)
 chrome_profile/
+
+# PyInstaller build output (build_exe.bat)
+build/
+dist/

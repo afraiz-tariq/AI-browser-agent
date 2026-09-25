@@ -14,6 +14,11 @@ full commit message.
 
 ## 2026-09-25
 
+- Double-click app: `AI Agent.exe` (PyInstaller, `ai_agent.spec` /
+  `build_exe.bat`, or the *Build Windows app* GitHub action, which builds
+  and checks it on Windows). `.env`, logs and output live next to the exe
+  (`app_paths.py`); the first run creates `.env` from `.env.example`;
+  `voice.py --check-install` reports which parts of the app load.
 - Windows arm, after comparing with ChatGPT's computer use on the same
   Notepad task: a `windows_press_keys` tool (Ctrl+N for a new tab, Tab, Esc,
   ...), each shortcut classified R0-R3 with unlisted ones always asking;

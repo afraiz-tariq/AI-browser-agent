@@ -221,7 +221,7 @@ def test_a_failed_task_shows_the_full_reason_on_screen():
 
 # --- tap-to-talk and running without a terminal ------------------------------
 
-from voice import AUTOSTART_NAME, SpeechEndDetector, set_autostart, talk_key_action  # noqa: E402
+from voice import AUTOSTART_NAME, SpeechEndDetector, check_install, ensure_env_file, set_autostart, talk_key_action  # noqa: E402
 
 CHUNK = 0.1  # seconds per fake audio chunk
 
@@ -290,6 +290,33 @@ def test_autostart_adds_and_removes_a_minimized_launcher(tmp_path):
     assert "Removed" in set_autostart(False, str(startup), r"D:\AI-Agent-latest")
     assert not launcher.exists()
     assert "nothing to remove" in set_autostart(False, str(startup), r"D:\AI-Agent-latest")
+
+
+def test_autostart_for_the_packaged_exe_launches_the_exe_itself(tmp_path):
+    startup = tmp_path / "Startup"
+    exe = r"D:\AI Agent\AI Agent.exe"
+    set_autostart(True, str(startup), r"D:\AI Agent", target=exe)
+    assert (startup / AUTOSTART_NAME).read_bytes().decode() == f'@echo off\r\nstart "AI Agent voice" /min "{exe}"\r\n'
+
+
+def test_first_run_of_the_exe_copies_env_example_next_to_it(tmp_path):
+    app, bundle = tmp_path / "app", tmp_path / "bundle"
+    app.mkdir()
+    bundle.mkdir()
+    (bundle / ".env.example").write_text("LLM_PROVIDER=anthropic\n", encoding="utf-8")
+    created = ensure_env_file(app, bundle)
+    assert created == app / ".env"
+    assert created.read_text(encoding="utf-8") == "LLM_PROVIDER=anthropic\n"
+    # A .env the person already filled in is never overwritten.
+    created.write_text("MY_KEY=1\n", encoding="utf-8")
+    assert ensure_env_file(app, bundle) is None
+    assert created.read_text(encoding="utf-8") == "MY_KEY=1\n"
+
+
+def test_check_install_fails_only_on_a_missing_required_module(capsys):
+    assert check_install(required=("json",), optional=("no_such_module_xyz",)) == 0
+    assert check_install(required=("json", "no_such_module_xyz"), optional=()) == 1
+    assert "MISSING  no_such_module_xyz" in capsys.readouterr().out
 
 
 def test_the_launcher_script_runs_voice_with_the_projects_own_python():

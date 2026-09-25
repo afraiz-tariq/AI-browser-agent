@@ -7,6 +7,7 @@ Voice front-end: tap a key, say a task, the agent does it and says the result.
     python voice.py --autostart on    # start it whenever you log in to Windows (off: undo)
     python voice.py --keys       # troubleshooting: show which keys this program sees
     python voice.py --mic-test   # troubleshooting: record 4 s and show what was heard
+    python voice.py --check-install  # check every part of the app can load (the exe too)
 
 Tap VOICE_PTT_KEY (default: right Ctrl) and speak; recording ends by itself
 when you stop talking (or tap again). Or type the task: in the window's
@@ -52,6 +53,8 @@ import sys
 import threading
 import time
 from typing import Callable
+
+from app_paths import APP_DIR, BUNDLE_DIR, FROZEN
 
 SAMPLE_RATE = 16000
 MIN_SECONDS = 0.3  # shorter than this is a key tap, not speech
@@ -599,9 +602,10 @@ def startup_folder() -> str:
     return os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
 
 
-def set_autostart(on: bool, startup_dir: str, project_dir: str) -> str:
+def set_autostart(on: bool, startup_dir: str, project_dir: str, target: str | None = None) -> str:
     """Add or remove a small launcher in the Startup folder that runs
-    start_voice.bat, minimized, at every login. Returns what happened."""
+    start_voice.bat (or `target`, e.g. AI Agent.exe), minimized, at every
+    login. Returns what happened."""
     path = os.path.join(startup_dir, AUTOSTART_NAME)
     if not on:
         if os.path.exists(path):
@@ -609,7 +613,7 @@ def set_autostart(on: bool, startup_dir: str, project_dir: str) -> str:
             return f"Removed {path} -- the voice assistant no longer starts at login."
         return "It wasn't set to start at login; nothing to remove."
     os.makedirs(startup_dir, exist_ok=True)
-    bat = os.path.join(project_dir, "start_voice.bat")
+    bat = target or os.path.join(project_dir, "start_voice.bat")
     with open(path, "w", encoding="utf-8", newline="\r\n") as f:
         f.write(f'@echo off\nstart "AI Agent voice" /min "{bat}"\n')
     return f"Created {path} -- the voice assistant will start (minimized) whenever you log in."
@@ -709,7 +713,7 @@ def build_quick_commands(config):
     )
 
 
-LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", "voice.log")
+LOG_PATH = os.path.join(str(APP_DIR), "output", "voice.log")
 _no_console = False  # started by start_voice.bat via pythonw.exe: no terminal window
 
 
@@ -730,6 +734,53 @@ def _alert(message: str) -> None:
             pass
 
 
+# What --check-install loads: the agent and its window must; the rest are
+# features that are simply off when missing, reported but not fatal.
+REQUIRED_MODULES = ("agent", "app_ui", "voice_ui", "playwright.sync_api", "anthropic", "openpyxl")
+OPTIONAL_MODULES = ("openai", "webview", "pystray", "faster_whisper", "sounddevice", "pyttsx3", "pywinauto")
+
+
+def check_install(required=REQUIRED_MODULES, optional=OPTIONAL_MODULES) -> int:
+    """Import every module the app needs, print what loaded, and return an
+    exit code: 1 if a required one is missing. Lets the build check that
+    AI Agent.exe really carries everything its lazy imports reach for."""
+    import importlib
+
+    def load(name: str, errors: list) -> None:
+        try:
+            importlib.import_module(name)
+        except Exception as e:  # noqa: BLE001 -- report every kind of load failure
+            errors.append(e)
+
+    failed = False
+    for name in (*required, *optional):
+        # Each on a fresh thread, as the app does (tasks run on a worker
+        # thread): pywinauto sets COM to single-threaded mode on import, which
+        # fails on a thread where the app window's library already chose it.
+        errors: list = []
+        thread = threading.Thread(target=load, args=(name, errors))
+        thread.start()
+        thread.join()
+        if not errors:
+            print(f"  ok       {name}")
+            continue
+        failed = failed or name in required
+        print(f"  {'MISSING' if name in required else 'missing'}  {name}  ({type(errors[0]).__name__}: {errors[0]})")
+    print("check-install:", "FAILED" if failed else "ok")
+    return 1 if failed else 0
+
+
+def ensure_env_file(app_dir: Path, bundle_dir: Path) -> Path | None:
+    """The packaged AI Agent.exe on its first run: no .env next to it yet.
+    Copy the bundled .env.example there and return its path, so the person
+    gets a file to put their API key in instead of a list of errors."""
+    env, example = app_dir / ".env", bundle_dir / ".env.example"
+    if env.exists() or not example.exists():
+        return None
+    env.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+    return env
+
+
 def main() -> None:
     global _no_console
     parser = argparse.ArgumentParser(description="Voice front-end for the agent.")
@@ -737,6 +788,8 @@ def main() -> None:
     parser.add_argument("--mic-test", action="store_true", help="record 4 s, show what was heard, then exit")
     parser.add_argument("--autostart", choices=["on", "off"],
                         help="start the voice assistant whenever you log in to Windows (on), or stop that (off)")
+    parser.add_argument("--check-install", action="store_true",
+                        help="check every part of the app can load (used to test the packaged exe), then exit")
     args = parser.parse_args()
     if sys.stdout is None or sys.stderr is None:
         # pythonw.exe (start_voice.bat): no terminal, so everything that would
@@ -752,9 +805,19 @@ def main() -> None:
     # libraries loaded first; it works either way, so don't show it every run.
     warnings.filterwarnings("ignore", message="Revert to STA COM threading mode")
 
+    if args.check_install:
+        sys.exit(check_install())
     if args.autostart:
-        print(set_autostart(args.autostart == "on", startup_folder(), os.path.dirname(os.path.abspath(__file__))))
+        print(set_autostart(args.autostart == "on", startup_folder(), str(APP_DIR),
+                            target=sys.executable if FROZEN else None))
         return
+    if FROZEN:
+        created = ensure_env_file(APP_DIR, BUNDLE_DIR)
+        if created is not None:
+            _alert(f"First run: created {created}.\n\nPut your LLM provider and API key in it "
+                   "(it opens now in Notepad), save it, then start AI Agent again.")
+            os.startfile(created)  # type: ignore[attr-defined]  # Windows-only, like the exe
+            return
     try:
         if args.keys:
             try:
