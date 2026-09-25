@@ -128,6 +128,10 @@ class Config:
     # directly in well under a second instead of a full agent run -- see
     # quick_commands.py. Jev (if TYPESAFE_API_KEY is set) must be at least this
     # sure, otherwise the full agent runs.
+    # The voice app keeps Chrome open between tasks (and after the last one),
+    # so a page or video a task opened stays there; false = close it after
+    # each task, like `python agent.py` always does.
+    keep_browser_open: bool = field(default_factory=lambda: _bool("KEEP_BROWSER_OPEN", True))
     voice_quick_commands: bool = field(default_factory=lambda: _bool("VOICE_QUICK_COMMANDS", True))
     quick_min_confidence: float = field(default_factory=lambda: _float("QUICK_MIN_CONFIDENCE", 0.8))
 

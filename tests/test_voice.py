@@ -314,9 +314,23 @@ def test_first_run_of_the_exe_copies_env_example_next_to_it(tmp_path):
 
 
 def test_check_install_fails_only_on_a_missing_required_module(capsys):
-    assert check_install(required=("json",), optional=("no_such_module_xyz",)) == 0
-    assert check_install(required=("json", "no_such_module_xyz"), optional=()) == 1
+    assert check_install(required=("json",), optional=("no_such_module_xyz",), driver_check=None) == 0
+    assert check_install(required=("json", "no_such_module_xyz"), optional=(), driver_check=None) == 1
     assert "MISSING  no_such_module_xyz" in capsys.readouterr().out
+
+
+def test_check_install_fails_when_the_browser_driver_is_missing(capsys):
+    # The first exe build: playwright imported fine, but its Node.js driver
+    # wasn't bundled, so browser tasks would all have failed.
+    assert check_install(required=("json",), optional=(), driver_check=lambda: "not found: node.exe") == 1
+    assert "MISSING  the browser driver" in capsys.readouterr().out
+    assert check_install(required=("json",), optional=(), driver_check=lambda: None) == 0
+
+
+def test_the_real_driver_check_finds_this_machines_playwright():
+    from voice import playwright_driver_problem
+
+    assert playwright_driver_problem() is None
 
 
 def test_the_launcher_script_runs_voice_with_the_projects_own_python():
@@ -502,3 +516,51 @@ def test_a_typed_task_waits_its_turn_it_is_not_queued_behind_a_running_one():
     assert jobs.empty()
     state["busy"] = False
     assert submit_typed("   ", state, jobs) is False  # nothing typed
+
+
+# --- the packaged exe on a real PC ------------------------------------------------
+
+def test_unblocking_does_nothing_off_windows_or_when_nothing_is_marked(tmp_path, monkeypatch):
+    from voice import unblock_bundle
+
+    (tmp_path / "pythonnet" / "runtime").mkdir(parents=True)
+    (tmp_path / "pythonnet" / "runtime" / "Python.Runtime.dll").write_bytes(b"x")
+    assert unblock_bundle(tmp_path) == 0  # not Windows here
+    monkeypatch.setattr("voice.sys.platform", "win32")
+    assert unblock_bundle(tmp_path) == 0  # no Zone.Identifier mark on the probe file
+
+
+def test_a_broken_app_window_backend_means_the_small_window_not_a_crash(monkeypatch):
+    import builtins
+
+    from voice import app_window_problem
+
+    monkeypatch.setattr("voice.sys.platform", "win32")
+    real_import = builtins.__import__
+
+    def failing(name, *args, **kwargs):
+        if name.startswith("webview.platforms"):
+            raise RuntimeError("Failed to resolve Python.Runtime.Loader.Initialize")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", failing)
+    assert "Python.Runtime.Loader.Initialize" in app_window_problem()
+
+
+def test_the_app_keeps_one_browser_across_tasks_unless_turned_off():
+    from types import SimpleNamespace
+
+    runs = []
+    keep = SimpleNamespace(keep_browser_open=True)
+    assistant = VoiceAssistant(keep, lambda a: "", lambda t: None, lambda s, a=None: None,
+                               lambda *a, **k: runs.append(k["browser_session"]) or {"success": True, "result": "ok"},
+                               log=lambda m: None)
+    assistant.handle_text("open youtube and play something")
+    assistant.handle_text("pause it")
+    assert runs[0] is not None and runs[0] is runs[1]  # the same Chrome both times, never closed by a task
+
+    off = VoiceAssistant(SimpleNamespace(keep_browser_open=False), lambda a: "", lambda t: None,
+                         lambda s, a=None: None, lambda *a, **k: runs.append(k["browser_session"]) or {"success": True},
+                         log=lambda m: None)
+    off.handle_text("open youtube")
+    assert runs[-1] is None

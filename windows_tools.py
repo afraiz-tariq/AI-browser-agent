@@ -505,13 +505,51 @@ class WindowsSession:
         extra_args = args.get("args") or ""
         cmd_line = f'"{path}" {extra_args}'.strip()
         try:
+            before = self._window_titles()
+        except Exception:  # noqa: BLE001 -- the launch report is a bonus, never a blocker
+            before = None
+        try:
             Application(backend="uia").start(cmd_line)
         except Exception as e:
             raise WindowsAutomationError(
                 f"Could not launch '{path}': {e}. Check the path is correct and the file exists."
             ) from e
         self.last_listing = None  # a new app is about to be in front; the old listing is for another window
-        return f"Launched '{path}'."
+        return f"Launched '{path}'." + self._report_launched_windows(path, before)
+
+    LAUNCH_WAIT_S = 5.0
+
+    def _window_titles(self) -> set[str]:
+        from pywinauto import Desktop
+
+        return {t for t in (w.window_text() for w in Desktop(backend="uia").windows()) if t and not is_own_window(t)}
+
+    def _report_launched_windows(self, path: str, before: set[str] | None) -> str:
+        """Say which window the launch produced -- found on the user's PC: the
+        model spent three steps listing windows after launching Notepad (which
+        had an old file open, '.env - Notepad') and was stopped as stuck. Waits
+        up to LAUNCH_WAIT_S for a new window, or one named after the app (an
+        app that was already running, like Notepad, reuses its window)."""
+        if before is None:
+            return ""
+        stem = os.path.splitext(os.path.basename(path.strip('"')))[0].lower()
+        deadline = time.monotonic() + self.LAUNCH_WAIT_S
+        while True:
+            try:
+                now = self._window_titles()
+            except Exception:  # noqa: BLE001 -- can't list: the model can still call windows_list_windows
+                return ""
+            new = sorted(now - before)
+            named = sorted(t for t in now if stem and stem in t.lower())
+            if new or time.monotonic() >= deadline:
+                break
+            time.sleep(0.4)
+        if new:
+            return f" New window: {'; '.join(repr(t) for t in new)} -- use that exact title."
+        if named:
+            return (f" No new window appeared; it was probably already open: {'; '.join(repr(t) for t in named)} "
+                    "-- use that exact title (the app may show an older document).")
+        return " Its window didn't appear yet; call windows_list_windows once to find it."
 
     def _do_windows_list_windows(self, args: dict) -> str:
         from pywinauto import Desktop

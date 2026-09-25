@@ -14,6 +14,30 @@ full commit message.
 
 ## 2026-09-25
 
+- From the exe's first real runs on the user's PC:
+  - The voice app keeps Chrome open between tasks (`KEEP_BROWSER_OPEN`,
+    default on): a YouTube video a task started was closed when the task
+    finished. A Chrome the person closed is replaced on next use.
+  - `windows_launch_app` now says which window appeared (or which already-open
+    window the app reused), and repeating a look-only action (list windows,
+    list controls, read, extract) a third time in a row gets a "not run --
+    act on the result" hint before the stuck-loop guard stops the task. The
+    Notepad run had listed windows three times and been stopped.
+
+- Exe, first real run on the user's PC: the downloaded app crashed on start
+  with "Failed to resolve Python.Runtime.Loader.Initialize" -- Windows marks
+  unzipped files as downloaded, and .NET won't load the app window's DLL
+  from them. The exe now removes that mark from its own bundled files on
+  start, falls back to the small window (instead of crashing) if the app
+  window's backend still can't load, and `--check-install` checks that
+  backend. The download is now one zip, not a zip inside a zip.
+
+- Fix for the exe: Playwright's browser driver (a Node.js program inside
+  the playwright package) wasn't bundled -- PyInstaller has no rule for it
+  and the import check still passed -- so browser tasks would have failed in
+  `AI Agent.exe`. `ai_agent.spec` now collects `playwright` in full, and
+  `--check-install` (run by the build job) fails if the driver is missing.
+
 - Double-click app: `AI Agent.exe` (PyInstaller, `ai_agent.spec` /
   `build_exe.bat`, or the *Build Windows app* GitHub action, which builds
   and checks it on Windows). `.env`, logs and output live next to the exe

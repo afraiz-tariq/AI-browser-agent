@@ -724,3 +724,39 @@ def test_a_failed_refresh_never_fails_the_action(monkeypatch):
     window.descendants.side_effect = RuntimeError("UIA busy")
     result = session.execute("windows_click_control", {"window_title": "Calculator", "index": 0})
     assert "Clicked control #0" in result and "Couldn't refresh" in result
+
+
+# --- a launch says which window it produced ------------------------------------------
+
+def _launch(monkeypatch, titles_seq):
+    session = WindowsSession()
+    session.LAUNCH_WAIT_S = 0.5
+    seq = iter(titles_seq)
+    last = {"v": set()}
+
+    def titles():
+        last["v"] = next(seq, last["v"])
+        return set(last["v"])
+
+    monkeypatch.setattr(session, "_window_titles", titles)
+    monkeypatch.setattr(windows_tools.time, "sleep", lambda s: None)
+    monkeypatch.setattr(sys.modules["pywinauto.application"], "Application", MagicMock(), raising=False)
+    return session.execute("windows_launch_app", {"path": "notepad.exe"})
+
+
+def test_a_launch_names_the_new_window(monkeypatch):
+    result = _launch(monkeypatch, [{"Inbox - Chrome"}, {"Inbox - Chrome", "Untitled - Notepad"}])
+    assert "New window: 'Untitled - Notepad'" in result
+
+
+def test_a_launch_of_an_app_already_open_names_its_window(monkeypatch):
+    # The user's PC: Notepad was already open on the exe's .env file.
+    result = _launch(monkeypatch, [{".env - Notepad"}, {".env - Notepad"}])
+    assert "already open: '.env - Notepad'" in result
+
+
+def test_a_launch_never_fails_because_windows_cant_be_listed(monkeypatch):
+    session = WindowsSession()
+    monkeypatch.setattr(session, "_window_titles", MagicMock(side_effect=RuntimeError("UIA busy")))
+    monkeypatch.setattr(sys.modules["pywinauto.application"], "Application", MagicMock(), raising=False)
+    assert session.execute("windows_launch_app", {"path": "notepad.exe"}) == "Launched 'notepad.exe'."

@@ -294,6 +294,7 @@ class VoiceAssistant:
         self.log = log
         self.run = run
         self.control = TaskControl()
+        self._browser = None  # one Chrome kept open across tasks (KEEP_BROWSER_OPEN); see shared_browser()
         # Set while a confirmation question is listening for yes/no, so the
         # key loop can say "no key needed" instead of "still working".
         self.answering = threading.Event()
@@ -352,7 +353,7 @@ class VoiceAssistant:
         outcome = self.run(
             text + SPOKEN_TASK_HINT, self.config, confirm_callback=self.confirm, should_stop=self.control.should_stop,
             on_step=self.ui.agent_step, task_updates=self.control.take_notes, ask_user=self.ask_user,
-            handoff=self.handoff,
+            handoff=self.handoff, browser_session=self.shared_browser(),
         )
         self.control.resume()
         if not outcome.get("success"):
@@ -363,6 +364,19 @@ class VoiceAssistant:
         self.ui.result(result_for_window(outcome), bool(outcome.get("success")))
         self.say(short_for_speech(outcome.get("result", "")) or ("Done." if outcome.get("success") else "That failed."))
         return outcome
+
+    def shared_browser(self):
+        """The BrowserSession this assistant keeps open across tasks, or None
+        (KEEP_BROWSER_OPEN=false) to let each task open and close its own.
+        Created on the worker thread and only ever used from it, as
+        Playwright's sync API requires."""
+        if not getattr(self.config, "keep_browser_open", False):
+            return None
+        if self._browser is None:
+            from browser import BrowserSession
+
+            self._browser = BrowserSession(self.config)
+        return self._browser
 
     def request_stop(self) -> None:
         self.log("  [voice] stop requested -- the task will stop before its next action.")
@@ -737,10 +751,30 @@ def _alert(message: str) -> None:
 # What --check-install loads: the agent and its window must; the rest are
 # features that are simply off when missing, reported but not fatal.
 REQUIRED_MODULES = ("agent", "app_ui", "voice_ui", "playwright.sync_api", "anthropic", "openpyxl")
-OPTIONAL_MODULES = ("openai", "webview", "pystray", "faster_whisper", "sounddevice", "pyttsx3", "pywinauto")
+OPTIONAL_MODULES = ("openai", "webview", "pystray", "faster_whisper", "sounddevice", "pyttsx3", "pywinauto") + (
+    # the app window's Windows backend (pythonnet/.NET): importing "webview"
+    # alone passes even when this part can't load
+    ("webview.platforms.winforms",) if sys.platform == "win32" else ())
 
 
-def check_install(required=REQUIRED_MODULES, optional=OPTIONAL_MODULES) -> int:
+def playwright_driver_problem() -> str | None:
+    """None if Playwright's driver (a Node.js program in the playwright
+    package, which is what actually drives Chrome) is present; otherwise what's
+    missing. Importing playwright works without it, so the module check alone
+    would pass an exe whose every browser task fails -- PyInstaller has no
+    built-in rule for Playwright, and the first exe build left it out."""
+    try:
+        from playwright._impl._driver import compute_driver_executable
+
+        paths = compute_driver_executable()
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}: {e}"
+    paths = paths if isinstance(paths, (tuple, list)) else (paths,)
+    missing = [str(p) for p in paths if not Path(p).exists()]
+    return ("not found: " + ", ".join(missing)) if missing else None
+
+
+def check_install(required=REQUIRED_MODULES, optional=OPTIONAL_MODULES, driver_check=playwright_driver_problem) -> int:
     """Import every module the app needs, print what loaded, and return an
     exit code: 1 if a required one is missing. Lets the build check that
     AI Agent.exe really carries everything its lazy imports reach for."""
@@ -766,8 +800,54 @@ def check_install(required=REQUIRED_MODULES, optional=OPTIONAL_MODULES) -> int:
             continue
         failed = failed or name in required
         print(f"  {'MISSING' if name in required else 'missing'}  {name}  ({type(errors[0]).__name__}: {errors[0]})")
+    problem = driver_check() if driver_check else None
+    if problem:
+        failed = True
+        print(f"  MISSING  the browser driver (playwright's Node.js part)  ({problem})")
+    elif driver_check:
+        print("  ok       the browser driver")
     print("check-install:", "FAILED" if failed else "ok")
     return 1 if failed else 0
+
+
+def unblock_bundle(bundle_dir: Path) -> int:
+    """Remove Windows' "downloaded from the internet" mark (the
+    Zone.Identifier stream) from the packaged app's OWN bundled files -- what
+    right-click > Properties > Unblock, or PowerShell's Unblock-File, does.
+
+    Found on the first real run of the downloaded exe: unzipping marks every
+    file, and .NET then refuses to load the app window's Python.Runtime.dll
+    ("Failed to resolve Python.Runtime.Loader.Initialize"), so the app
+    crashed on start. The person has already chosen to run AI Agent.exe
+    (and passed SmartScreen); this only touches files inside its own
+    _internal folder, never anything else. Returns how many were unblocked."""
+    if sys.platform != "win32":
+        return 0
+    probe = bundle_dir / "pythonnet" / "runtime" / "Python.Runtime.dll"
+    if not os.path.exists(f"{probe}:Zone.Identifier"):
+        return 0  # not marked (built locally, or already unblocked): nothing to do
+    count = 0
+    for folder, _, files in os.walk(bundle_dir):
+        for name in files:
+            try:
+                os.remove(os.path.join(folder, name) + ":Zone.Identifier")
+                count += 1
+            except OSError:
+                pass  # this file wasn't marked
+    return count
+
+
+def app_window_problem() -> str | None:
+    """None if the app window's Windows backend (pywebview's WinForms, via
+    pythonnet/.NET) loads; otherwise why not -- then the small tkinter window
+    is used instead of crashing."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import webview.platforms.winforms  # noqa: F401
+    except Exception as e:  # noqa: BLE001 -- any failure here means "use the small window"
+        return f"{type(e).__name__}: {e}"
+    return None
 
 
 def ensure_env_file(app_dir: Path, bundle_dir: Path) -> Path | None:
@@ -812,6 +892,9 @@ def main() -> None:
                             target=sys.executable if FROZEN else None))
         return
     if FROZEN:
+        unblocked = unblock_bundle(BUNDLE_DIR)
+        if unblocked:
+            print(f"  [voice] removed the 'downloaded from the internet' mark from {unblocked} of the app's own files")
         created = ensure_env_file(APP_DIR, BUNDLE_DIR)
         if created is not None:
             _alert(f"First run: created {created}.\n\nPut your LLM provider and API key in it "
@@ -883,6 +966,10 @@ def main() -> None:
         # The full app window (app_ui.py, pywebview) when it's installed;
         # otherwise the small tkinter window below.
         try:
+            problem = app_window_problem()
+            if problem:
+                raise ImportError(f"the app window's Windows part didn't load ({problem}). If you downloaded "
+                                  "the app, run in PowerShell: Get-ChildItem -Recurse <app folder> | Unblock-File")
             from app_ui import App
 
             app = App(
@@ -894,7 +981,7 @@ def main() -> None:
             )
             ui = app.state
         except ImportError as e:
-            print(f"  [voice] the full app window needs pywebview (pip install pywebview) -- {e}; "
+            print(f"  [voice] can't use the full app window: {e} (it needs pip install pywebview); "
                   "using the small window instead.")
         except Exception as e:  # noqa: BLE001 -- e.g. WebView2 missing: the small window still works
             print(f"  [voice] could not open the app window ({e}); using the small window instead.")

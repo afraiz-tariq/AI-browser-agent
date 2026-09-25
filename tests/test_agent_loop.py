@@ -371,3 +371,64 @@ def test_on_step_is_told_each_step_and_its_errors_are_ignored(test_config, fixtu
     outcome = run_task("Open it.", test_config, dry_run=True, llm_client=LLMClient(mock), on_step=on_step)
     assert outcome["success"] is True
     assert seen == [(1, "goto"), (2, "finish")]
+
+
+def test_a_caller_owned_browser_stays_open_between_tasks(test_config, fixtures_server):
+    # The voice app keeps one Chrome: a YouTube video a task started must keep
+    # playing after the task ends (found on the user's PC: it closed).
+    from browser import BrowserSession
+
+    shared = BrowserSession(test_config)
+    try:
+        first = MockProvider([
+            _reply("Opening.", "goto", {"url": f"{fixtures_server}/index.html"}),
+            _reply("Done.", "finish", {"summary": "Opened the mock search engine page."}),
+        ])
+        assert run_task("Open it.", test_config, dry_run=True, llm_client=LLMClient(first),
+                        browser_session=shared)["success"]
+        assert shared.is_alive() and "index.html" in shared.page.url  # still open
+
+        second = MockProvider([_reply("Done.", "finish", {"summary": "The mock search engine page is still open."})])
+        assert run_task("What's open?", test_config, dry_run=True, llm_client=LLMClient(second),
+                        browser_session=shared)["success"]
+        assert "index.html" in second.calls[0][1]  # the next task sees the page that was left open
+    finally:
+        shared.stop()
+
+
+def test_a_kept_browser_the_person_closed_is_replaced_on_next_use(test_config, fixtures_server):
+    from browser import BrowserSession, BrowserToolProvider
+
+    shared = BrowserSession(test_config)
+    provider = BrowserToolProvider(shared)
+    try:
+        provider.ensure_ready()
+        shared.page.close()  # the person closed the tab
+        assert shared.is_alive() is False
+        provider.ensure_ready()  # a fresh Chrome instead of an error
+        assert shared.is_alive()
+        shared.goto(f"{fixtures_server}/index.html")
+    finally:
+        shared.stop()
+
+
+def test_a_repeated_look_gets_a_hint_first_and_the_task_can_recover(test_config, fixtures_server):
+    # The user's Notepad run: the model listed windows three times in a row
+    # (its thought already said "press ctrl+n") and was stopped outright.
+    mock = MockProvider([
+        _reply("Opening.", "goto", {"url": f"{fixtures_server}/index.html"}),
+        _reply("Reading.", "extract", {}),
+        _reply("Reading again.", "extract", {}),
+        _reply("And again.", "extract", {}),  # not run: a hint instead
+        _reply("Right, done.", "finish", {"summary": "The mock search engine page has a search box."}),
+    ])
+    outcome = run_task("Read it.", test_config, dry_run=True, llm_client=LLMClient(mock))
+    assert outcome["success"] is True
+    assert "NOT RUN: you already did exactly this twice" in mock.calls[4][1]
+
+
+def test_repeating_after_the_hint_still_stops_the_task(test_config, fixtures_server):
+    mock = MockProvider([_reply("Opening.", "goto", {"url": f"{fixtures_server}/index.html"})]
+                        + [_reply("Reading.", "extract", {})] * 4)
+    outcome = run_task("Read it.", test_config, dry_run=True, llm_client=LLMClient(mock))
+    assert outcome["success"] is False and "repeated the same action" in outcome["result"]
