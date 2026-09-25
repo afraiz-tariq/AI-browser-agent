@@ -14,6 +14,13 @@ full commit message.
 
 ## 2026-09-25
 
+- Windows arm, after comparing with ChatGPT's computer use on the same
+  Notepad task: a `windows_press_keys` tool (Ctrl+N for a new tab, Tab, Esc,
+  ...), each shortcut classified R0-R3 with unlisted ones always asking;
+  every click, type and key press now returns the window's fresh control
+  list, saving a step per action; app tips in the prompt (Notepad: Ctrl+N
+  for a new empty tab). Fixes the "open new notepad and write hello" loop.
+
 - The app window (`app_ui.py`, `ui/`, pywebview): a chat-style feed with
   every step, approval cards, Pause / Take over / Stop, history of past
   tasks, compact always-on-top mode. Two-way: messages typed mid-task steer

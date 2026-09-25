@@ -82,6 +82,16 @@ Rules:
   one click per step.
 - For a screenshot, use windows_screenshot -- never the Snipping Tool: its
   capture overlay waits for a mouse drag these tools can't perform.
+- Windows apps: use keyboard shortcuts for app commands (windows_press_keys),
+  and don't list controls again after an action -- its result already has
+  the fresh list. App tips:
+  * Notepad (Windows 11) reopens earlier tabs. For a new empty document,
+    press ctrl+n in the Notepad window, then type into the new tab's text
+    editor (the Document / Edit control) from the fresh list.
+  * Calculator: press the keys with windows_click_controls in one step; the
+    result display is in the fresh list that comes back.
+  * If an app is already open, use its window rather than launching a
+    second copy.
 - If a webpage shows a login form, a "sign in to continue" wall, a CAPTCHA,
   or 2FA/MFA prompt, call login_required immediately. Never try to guess
   credentials, solve a CAPTCHA, or bypass MFA.

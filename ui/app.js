@@ -72,7 +72,7 @@ const ACTIONS = {
   windows_list_controls: "Looking at the window", windows_click_control: "Clicking a button",
   windows_click_controls: "Clicking buttons", windows_type_into_control: "Typing",
   windows_read_control_text: "Reading text", windows_close_window: "Closing a window",
-  windows_screenshot: "Taking a screenshot", ask_user: "Asking you",
+  windows_screenshot: "Taking a screenshot", windows_press_keys: "Pressing keys", ask_user: "Asking you",
 };
 const KEYS = { ctrl_r: "Right Ctrl", ctrl_l: "Left Ctrl", ctrl: "Ctrl", alt_r: "Right Alt", alt_gr: "AltGr",
   alt_l: "Left Alt", shift_r: "Right Shift", shift_l: "Left Shift", caps_lock: "Caps Lock",

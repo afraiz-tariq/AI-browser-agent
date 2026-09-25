@@ -232,7 +232,7 @@ def _describe(el) -> str:
 BROWSER_PAGE_ACTIONS = frozenset({"goto", "click", "type", "scroll", "go_back", "wait", "extract"})
 WINDOWS_IN_WINDOW_ACTIONS = frozenset({
     "windows_list_controls", "windows_click_control", "windows_click_controls", "windows_type_into_control",
-    "windows_read_control_text",
+    "windows_read_control_text", "windows_press_keys",
 })
 
 WINDOWS_OPERATIONS = {

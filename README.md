@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 465 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 499 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -201,6 +201,8 @@ call for that window -- mirrors the browser arm's `observe()` ->
 - `windows_click_controls(window_title, indices)` -- several clicks in one step, in order (e.g. Calculator 3, +, 2, =); **dynamic** like a single click: R2 if any control in the sequence looks sensitive, else R0.
 - `windows_type_into_control(window_title, index, text)` -- R1. Reports the text read back from the control (never for password boxes) and the window's new title if typing renamed it (e.g. `*hello world - Notepad`).
 - `windows_read_control_text(window_title, index)` -- R0.
+- `windows_press_keys(window_title, keys)` -- keyboard shortcuts, e.g. `ctrl+n` for a new empty Notepad tab. **Each key is classified:** moving around, new tab, find, copy are R0; backspace/undo R1; enter, delete, save, close, paste, print R2 (asks by default); anything unlisted (e.g. `alt+tab`, the Windows key) R3, always asks. A sequence takes its riskiest key's tier.
+- Clicks, typing and key presses **return the window's fresh control list** ("Now -- Controls in ..."), so the model doesn't need a `windows_list_controls` step after each action.
 - `windows_screenshot(window_title?)` -- R1. Saves the whole screen (or one window) as a new PNG in `output/screenshots/`; never overwrites, never sent anywhere. Needs `pip install pillow`. The model is told not to use the Snipping Tool: its capture overlay waits for a mouse drag this arm can't do.
 - `windows_close_window(window_title)` -- R2.
 
