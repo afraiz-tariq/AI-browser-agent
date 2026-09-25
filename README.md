@@ -14,7 +14,7 @@ real end-to-end runs. Every arm implements a common `ToolProvider` contract
 through R3 always-confirm) governing which actions ask for `[y/n]`
 confirmation before running. Every real LLM call's token usage (input/
 output) is tracked per task and surfaced in both the structured output
-record and `LLMClient.get_usage()`. 506 automated tests, fully offline,
+record and `LLMClient.get_usage()`. 514 automated tests, fully offline,
 plus a separate eval suite (`evals/`) that runs representative tasks
 against a real configured LLM and scores what the agent actually did.
 
@@ -704,6 +704,7 @@ each other.
 | `MCP_FILESYSTEM_ROOT` | Required if `ENABLE_MCP_FILESYSTEM=true` -- the one local folder the agent may read from |
 | `MCP_STARTUP_TIMEOUT_S` | How long to wait for an MCP server to start before giving up; default `90` (an npx-launched server can be slow on a cold npm registry round-trip) |
 | `VOICE_PTT_KEY` | Voice: hold this key to talk (default `ctrl_r` = right Ctrl; also `f9`, `alt_gr`, `scroll_lock`, a letter... -- `python voice.py --keys` shows names) |
+| `KEEP_BROWSER_OPEN` | Voice app: keep Chrome open between tasks and after the last one, so a page or video a task opened stays (default `true`); `false` closes it after each task like `python agent.py` |
 | `VOICE_UI` | Voice: the floating window with Yes / No buttons and the icon by the clock (default `true`); `false` = terminal only |
 | `VOICE_MODE` | Voice: `tap` (default: tap the key and speak, recording ends when you stop talking) or `hold` (hold the key while speaking) |
 | `VOICE_STOP_KEY` | Voice: stops a running task before its next action (default `f10`) |

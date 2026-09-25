@@ -14,6 +14,16 @@ full commit message.
 
 ## 2026-09-25
 
+- From the exe's first real runs on the user's PC:
+  - The voice app keeps Chrome open between tasks (`KEEP_BROWSER_OPEN`,
+    default on): a YouTube video a task started was closed when the task
+    finished. A Chrome the person closed is replaced on next use.
+  - `windows_launch_app` now says which window appeared (or which already-open
+    window the app reused), and repeating a look-only action (list windows,
+    list controls, read, extract) a third time in a row gets a "not run --
+    act on the result" hint before the stuck-loop guard stops the task. The
+    Notepad run had listed windows three times and been stopped.
+
 - Exe, first real run on the user's PC: the downloaded app crashed on start
   with "Failed to resolve Python.Runtime.Loader.Initialize" -- Windows marks
   unzipped files as downloaded, and .NET won't load the app window's DLL

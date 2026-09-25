@@ -67,6 +67,13 @@ CONSECUTIVE_NO_EFFECT_HINT_THRESHOLD = 2
 CONSECUTIVE_NO_EFFECT_ABORT_THRESHOLD = 4
 
 
+# Actions that only look (they change nothing); repeating one gets a hint
+# before the stuck-loop guard stops the task -- see the loop.
+LOOK_ONLY_ACTIONS = frozenset({
+    "windows_list_windows", "windows_list_controls", "windows_read_control_text", "extract",
+})
+
+
 def offer_manual_resolution(url: str, config, dry_run: bool, logger: TaskLogger, attempt: int,
                             handoff: Callable[[str], bool] | None = None) -> bool:
     """
@@ -177,6 +184,7 @@ def run_task(
 
     history: list[str] = []
     user_updates: list[str] = []  # messages from the person mid-task, see task_updates
+    nudged_repeats: set[str] = set()  # look-only actions already answered with a "stop repeating" hint
 
     def task_now() -> str:
         if not user_updates:
@@ -413,6 +421,20 @@ def run_task(
             oscillating = oscillating or (
                 len(history) >= 6 and recent6[:3] == recent6[3:] and len(set(recent6[:3])) == 3
             )
+            # Asking to look at the same thing a third time in a row isn't
+            # progress, but it's often a model that just needs telling -- on
+            # the user's PC, DeepSeek listed windows three times while its own
+            # thought said "I'll press ctrl+n". So the first time, don't run
+            # it: say the result is already above and to act on it. Only a
+            # model that still repeats after that is stopped.
+            if exact_repeat and action in LOOK_ONLY_ACTIONS and action not in nudged_repeats:
+                nudged_repeats.add(action)
+                hint = ("NOT RUN: you already did exactly this twice in a row; its result is in the history above "
+                        "and won't change by asking again. Act on it now (press keys, click, type, ...) or finish.")
+                history[-1] += f" [{hint}]"
+                logger.note(f"HINT: {hint}")
+                print(f"  [hint] {hint}")
+                continue
             if action != "finish" and (exact_repeat or oscillating):
                 raise TaskCannotBeCompleted(
                     explain(
