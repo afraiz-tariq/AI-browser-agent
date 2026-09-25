@@ -516,3 +516,32 @@ def test_a_typed_task_waits_its_turn_it_is_not_queued_behind_a_running_one():
     assert jobs.empty()
     state["busy"] = False
     assert submit_typed("   ", state, jobs) is False  # nothing typed
+
+
+# --- the packaged exe on a real PC ------------------------------------------------
+
+def test_unblocking_does_nothing_off_windows_or_when_nothing_is_marked(tmp_path, monkeypatch):
+    from voice import unblock_bundle
+
+    (tmp_path / "pythonnet" / "runtime").mkdir(parents=True)
+    (tmp_path / "pythonnet" / "runtime" / "Python.Runtime.dll").write_bytes(b"x")
+    assert unblock_bundle(tmp_path) == 0  # not Windows here
+    monkeypatch.setattr("voice.sys.platform", "win32")
+    assert unblock_bundle(tmp_path) == 0  # no Zone.Identifier mark on the probe file
+
+
+def test_a_broken_app_window_backend_means_the_small_window_not_a_crash(monkeypatch):
+    import builtins
+
+    from voice import app_window_problem
+
+    monkeypatch.setattr("voice.sys.platform", "win32")
+    real_import = builtins.__import__
+
+    def failing(name, *args, **kwargs):
+        if name.startswith("webview.platforms"):
+            raise RuntimeError("Failed to resolve Python.Runtime.Loader.Initialize")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", failing)
+    assert "Python.Runtime.Loader.Initialize" in app_window_problem()

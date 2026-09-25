@@ -14,6 +14,14 @@ full commit message.
 
 ## 2026-09-25
 
+- Exe, first real run on the user's PC: the downloaded app crashed on start
+  with "Failed to resolve Python.Runtime.Loader.Initialize" -- Windows marks
+  unzipped files as downloaded, and .NET won't load the app window's DLL
+  from them. The exe now removes that mark from its own bundled files on
+  start, falls back to the small window (instead of crashing) if the app
+  window's backend still can't load, and `--check-install` checks that
+  backend. The download is now one zip, not a zip inside a zip.
+
 - Fix for the exe: Playwright's browser driver (a Node.js program inside
   the playwright package) wasn't bundled -- PyInstaller has no rule for it
   and the import check still passed -- so browser tasks would have failed in

@@ -737,7 +737,10 @@ def _alert(message: str) -> None:
 # What --check-install loads: the agent and its window must; the rest are
 # features that are simply off when missing, reported but not fatal.
 REQUIRED_MODULES = ("agent", "app_ui", "voice_ui", "playwright.sync_api", "anthropic", "openpyxl")
-OPTIONAL_MODULES = ("openai", "webview", "pystray", "faster_whisper", "sounddevice", "pyttsx3", "pywinauto")
+OPTIONAL_MODULES = ("openai", "webview", "pystray", "faster_whisper", "sounddevice", "pyttsx3", "pywinauto") + (
+    # the app window's Windows backend (pythonnet/.NET): importing "webview"
+    # alone passes even when this part can't load
+    ("webview.platforms.winforms",) if sys.platform == "win32" else ())
 
 
 def playwright_driver_problem() -> str | None:
@@ -793,6 +796,46 @@ def check_install(required=REQUIRED_MODULES, optional=OPTIONAL_MODULES, driver_c
     return 1 if failed else 0
 
 
+def unblock_bundle(bundle_dir: Path) -> int:
+    """Remove Windows' "downloaded from the internet" mark (the
+    Zone.Identifier stream) from the packaged app's OWN bundled files -- what
+    right-click > Properties > Unblock, or PowerShell's Unblock-File, does.
+
+    Found on the first real run of the downloaded exe: unzipping marks every
+    file, and .NET then refuses to load the app window's Python.Runtime.dll
+    ("Failed to resolve Python.Runtime.Loader.Initialize"), so the app
+    crashed on start. The person has already chosen to run AI Agent.exe
+    (and passed SmartScreen); this only touches files inside its own
+    _internal folder, never anything else. Returns how many were unblocked."""
+    if sys.platform != "win32":
+        return 0
+    probe = bundle_dir / "pythonnet" / "runtime" / "Python.Runtime.dll"
+    if not os.path.exists(f"{probe}:Zone.Identifier"):
+        return 0  # not marked (built locally, or already unblocked): nothing to do
+    count = 0
+    for folder, _, files in os.walk(bundle_dir):
+        for name in files:
+            try:
+                os.remove(os.path.join(folder, name) + ":Zone.Identifier")
+                count += 1
+            except OSError:
+                pass  # this file wasn't marked
+    return count
+
+
+def app_window_problem() -> str | None:
+    """None if the app window's Windows backend (pywebview's WinForms, via
+    pythonnet/.NET) loads; otherwise why not -- then the small tkinter window
+    is used instead of crashing."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import webview.platforms.winforms  # noqa: F401
+    except Exception as e:  # noqa: BLE001 -- any failure here means "use the small window"
+        return f"{type(e).__name__}: {e}"
+    return None
+
+
 def ensure_env_file(app_dir: Path, bundle_dir: Path) -> Path | None:
     """The packaged AI Agent.exe on its first run: no .env next to it yet.
     Copy the bundled .env.example there and return its path, so the person
@@ -835,6 +878,9 @@ def main() -> None:
                             target=sys.executable if FROZEN else None))
         return
     if FROZEN:
+        unblocked = unblock_bundle(BUNDLE_DIR)
+        if unblocked:
+            print(f"  [voice] removed the 'downloaded from the internet' mark from {unblocked} of the app's own files")
         created = ensure_env_file(APP_DIR, BUNDLE_DIR)
         if created is not None:
             _alert(f"First run: created {created}.\n\nPut your LLM provider and API key in it "
@@ -906,6 +952,10 @@ def main() -> None:
         # The full app window (app_ui.py, pywebview) when it's installed;
         # otherwise the small tkinter window below.
         try:
+            problem = app_window_problem()
+            if problem:
+                raise ImportError(f"the app window's Windows part didn't load ({problem}). If you downloaded "
+                                  "the app, run in PowerShell: Get-ChildItem -Recurse <app folder> | Unblock-File")
             from app_ui import App
 
             app = App(
@@ -917,7 +967,7 @@ def main() -> None:
             )
             ui = app.state
         except ImportError as e:
-            print(f"  [voice] the full app window needs pywebview (pip install pywebview) -- {e}; "
+            print(f"  [voice] can't use the full app window: {e} (it needs pip install pywebview); "
                   "using the small window instead.")
         except Exception as e:  # noqa: BLE001 -- e.g. WebView2 missing: the small window still works
             print(f"  [voice] could not open the app window ({e}); using the small window instead.")
