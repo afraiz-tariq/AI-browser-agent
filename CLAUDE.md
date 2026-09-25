@@ -34,6 +34,8 @@ One arm = one file implementing `ToolProvider` (`tool_provider.py` is the contra
 | Discord interface, confirm-in-chat | `discord_bot.py` | `test_discord_bot.py` |
 | Voice interface, spoken confirm, stop key | `voice.py` | `test_voice.py` |
 | Voice window (Yes/No buttons) and tray icon | `voice_ui.py` | `test_voice.py` |
+| App window (feed, history, pause/take over, compact mode) | `app_ui.py`, `ui/` | `test_app_ui.py` |
+| The agent asking the person (`ask_user` tool) | `user_tools.py` | `test_app_ui.py` |
 | Voice quick commands (open app/site, volume, media, screenshot) | `quick_commands.py` | `test_quick_commands.py` |
 | `.env` parsing/validation | `config.py` | `test_config.py` |
 | Risk-tier/confirmation contract itself | `tool_provider.py` | `test_tool_provider.py` |

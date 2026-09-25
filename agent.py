@@ -67,7 +67,8 @@ CONSECUTIVE_NO_EFFECT_HINT_THRESHOLD = 2
 CONSECUTIVE_NO_EFFECT_ABORT_THRESHOLD = 4
 
 
-def offer_manual_resolution(url: str, config, dry_run: bool, logger: TaskLogger, attempt: int) -> bool:
+def offer_manual_resolution(url: str, config, dry_run: bool, logger: TaskLogger, attempt: int,
+                            handoff: Callable[[str], bool] | None = None) -> bool:
     """
     Called whenever a login/CAPTCHA/verification wall is detected -- either
     by the heuristic in browser.py, or by the model deciding on its own
@@ -86,6 +87,15 @@ def offer_manual_resolution(url: str, config, dry_run: bool, logger: TaskLogger,
     if attempt > MAX_MANUAL_RESOLUTION_OFFERS:
         logger.note(f"Manual-resolution offer limit ({MAX_MANUAL_RESOLUTION_OFFERS}) reached; giving up.")
         return False
+    if handoff is not None:
+        # A front-end (the voice app) asks its own way: "your turn -- log in,
+        # then press Continue". Same rule: the person clears the wall, never
+        # the agent.
+        if not handoff(f"The page at {url} needs you: log in, solve the CAPTCHA or verify in the Chrome window, "
+                       f"then press Continue ({attempt}/{MAX_MANUAL_RESOLUTION_OFFERS})."):
+            return False
+        logger.note("User resolved the wall manually; continuing.")
+        return True
     print(f"\nThe page at {url} looks like it needs manual action (login, CAPTCHA, or verification).")
     answer = input(
         f"Resolve it in the Chrome window, then press Enter to continue ({attempt}/{MAX_MANUAL_RESOLUTION_OFFERS}, "
@@ -102,6 +112,9 @@ def run_task(
     confirm_callback: Callable[[str], bool] | None = None,
     should_stop: Callable[[], bool] | None = None,
     on_step: Callable[[int, str, str], None] | None = None,
+    task_updates: Callable[[], list[str]] | None = None,
+    ask_user: Callable[[str], str | None] | None = None,
+    handoff: Callable[[str], bool] | None = None,
 ) -> dict:
     """
     Runs one task end-to-end and returns a result dict. Also writes a log
@@ -125,6 +138,17 @@ def run_task(
     `on_step(step, thought, action)`, if given, is told about each decided
     step before it runs -- display only (voice.py's window shows "Step 3:
     ..."); anything it raises is ignored.
+
+    Three more hooks for an interactive front-end (the voice app), all
+    optional; without them the task runs exactly as before:
+    - `task_updates()` returns messages the person sent mid-task ("no, the
+      other tab"). They're appended to the TASK text itself -- the one
+      trusted slot -- never to the history, where page/app text lives.
+    - `ask_user(question)` registers the ask_user tool (user_tools.py) so the
+      model can ask the person something; the answer is added to the TASK
+      the same way.
+    - `handoff(message)` replaces the terminal prompt at a login/CAPTCHA
+      wall: the person clears it, then says continue (True) or stop.
     """
     logger = TaskLogger(Path(__file__).parent / "logs", task)
     user_confirm = confirm_callback or ask_confirmation
@@ -144,6 +168,14 @@ def run_task(
     mcp_providers: list[MCPToolProvider] = []  # only non-empty per ENABLE_MCP_* flags -- closed in the finally below
 
     history: list[str] = []
+    user_updates: list[str] = []  # messages from the person mid-task, see task_updates
+
+    def task_now() -> str:
+        if not user_updates:
+            return task
+        return (task + "\n\nMESSAGES FROM THE USER DURING THIS TASK (same person, same authority as the task "
+                "above; if they conflict, the latest one wins):\n" + "\n".join(f"- {u}" for u in user_updates))
+
     result_summary = None
     error_message = None
     empty_finish_attempts = 0
@@ -190,6 +222,14 @@ def run_task(
             windows_session = WindowsSession()
             safe_apps = frozenset(a for a in config.safe_apps.split(",") if a.strip())
             providers.append(WindowsToolProvider(windows_session, safe_apps=safe_apps))
+        if ask_user is not None:
+            from user_tools import UserToolProvider
+
+            def remember_answer(question: str, answer: str) -> None:
+                user_updates.append(f"(answering your question \"{question}\") {answer}")
+                logger.note(f"User answered {question!r}: {answer!r}")
+
+            providers.append(UserToolProvider(ask_user, remember_answer))
 
         tool_specs: list[ToolSpec] = []
         tool_owner: dict[str, ToolProvider] = {}
@@ -224,6 +264,10 @@ def run_task(
         for step in range(1, config.max_steps + 1):
             steps_taken = step
             _check_stop(should_stop)
+            if task_updates is not None:
+                for update in task_updates():
+                    user_updates.append(update)
+                    logger.note(f"Message from the user mid-task: {update!r}")
             timing: dict = {"step": step}
             step_timings.append(timing)
             # OBSERVE only applies to the browser arm. Before the browser
@@ -299,7 +343,7 @@ def run_task(
             if observation is not None and observation.looks_like_login and step > 1:
                 logger.note(f"Login/authentication wall detected at {observation.url}")
                 wall_offer_attempts += 1
-                if offer_manual_resolution(observation.url, config, dry_run, logger, wall_offer_attempts):
+                if offer_manual_resolution(observation.url, config, dry_run, logger, wall_offer_attempts, handoff):
                     continue
                 raise TaskCannotBeCompleted(
                     explain(
@@ -314,7 +358,7 @@ def run_task(
 
             try:
                 started = time.perf_counter()
-                decision = llm.decide_next_action(task, history, observation)
+                decision = llm.decide_next_action(task_now(), history, observation)
                 timing["decide_ms"] = round((time.perf_counter() - started) * 1000, 1)
             except LLMError as e:
                 raise TaskCannotBeCompleted(_explain_llm_error(e)) from e
@@ -376,7 +420,7 @@ def run_task(
             if action == "login_required":
                 logger.note(f"Model reported login_required at {current_url}: {args.get('reason', '')}")
                 wall_offer_attempts += 1
-                if offer_manual_resolution(current_url, config, dry_run, logger, wall_offer_attempts):
+                if offer_manual_resolution(current_url, config, dry_run, logger, wall_offer_attempts, handoff):
                     continue
                 raise TaskCannotBeCompleted(
                     explain(

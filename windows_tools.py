@@ -180,6 +180,17 @@ def _escape_for_type_keys(text: str) -> str:
 
 
 # Extends browser.py's SENSITIVE_KEYWORDS (submit/buy/delete/...) with
+# This project's own windows (the voice app, app_ui.py / voice_ui.py). The
+# arm never lists or touches them: the app's text box sends messages that
+# land in the trusted TASK slot, so an agent able to type there -- say, told
+# to by a web page -- could instruct itself as if it were the person.
+OWN_WINDOW_TITLES = frozenset({"AI Agent", "AI Agent (compact)", "AI Agent voice"})
+
+
+def is_own_window(title: str) -> bool:
+    return (title or "").strip() in OWN_WINDOW_TITLES
+
+
 SCREENSHOT_DIR = OUTPUT_DIR / "screenshots"
 
 
@@ -418,12 +429,25 @@ class WindowsSession:
             windows = Desktop(backend="uia").windows()
         except Exception as e:
             raise WindowsAutomationError(f"Could not list open windows: {e}") from e
-        titles = sorted({w.window_text() for w in windows if w.window_text()})
+        titles = sorted({w.window_text() for w in windows if w.window_text() and not is_own_window(w.window_text())})
         if not titles:
             return "No open windows with a title were found."
         return "Open windows: " + "; ".join(titles)
 
     def _connect_window(self, window_title: str):
+        window = self._find_window(window_title)
+        try:
+            actual = window.window_text()
+        except Exception:
+            actual = window_title
+        if is_own_window(window_title) or is_own_window(actual):
+            raise WindowsAutomationError(
+                f"'{actual}' is this agent's own window; the Windows tools don't act on it. "
+                "Pick another window from windows_list_windows."
+            )
+        return window
+
+    def _find_window(self, window_title: str):
         from pywinauto.application import Application
 
         # Exact match first: if window_title is a real title returned by

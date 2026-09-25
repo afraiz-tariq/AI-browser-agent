@@ -87,7 +87,7 @@ class _Fakes:
     def transcribe(self, audio):
         return self.transcripts.pop(0) if self.transcripts else ""
 
-    def run(self, text, config, confirm_callback, should_stop, on_step=None):
+    def run(self, text, config, confirm_callback, should_stop, **hooks):
         self.runs.append({"text": text, "confirm": confirm_callback, "should_stop": should_stop})
         return {"success": True, "result": "Opened Notepad and typed hello."}
 
@@ -406,7 +406,7 @@ def test_the_window_follows_the_task():
     ui = _FakeUi()
     steps = []
 
-    def run(text, config, confirm_callback, should_stop, on_step=None):
+    def run(text, config, confirm_callback, should_stop, on_step=None, **hooks):
         on_step(1, "Opening Google.", "goto")
         steps.append(text)
         return {"success": True, "result": "Searched Google for ABC. Results are showing."}

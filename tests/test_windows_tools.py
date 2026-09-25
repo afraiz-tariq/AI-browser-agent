@@ -595,3 +595,32 @@ def test_screenshot_is_r1_so_it_never_asks_unless_r1_confirmation_is_on():
     assert provider.get_dynamic_risk("windows_screenshot", {}) is None  # static R1 stands
     assert requires_confirmation("R1", _FakeConfig(confirm_r1_actions=False)) is False
     assert requires_confirmation("R1", _FakeConfig(confirm_r1_actions=True)) is True
+
+
+# --- the agent's own windows are off limits -------------------------------------
+
+@pytest.mark.parametrize("title, own", [
+    ("AI Agent", True), ("AI Agent (compact)", True), ("AI Agent voice", True), (" AI Agent ", True),
+    ("Untitled - Notepad", False), ("AI Agent docs - Google Chrome", False),
+])
+def test_own_windows_are_recognised_by_exact_title(title, own):
+    assert windows_tools.is_own_window(title) is own
+
+
+def test_the_agent_cannot_connect_to_its_own_window(monkeypatch):
+    session = WindowsSession()
+    fake = MagicMock()
+    fake.window_text.return_value = "AI Agent"
+    monkeypatch.setattr(session, "_find_window", lambda title: fake)
+    with pytest.raises(WindowsAutomationError, match="own window"):
+        session._connect_window("Agent")  # a guessed substring that lands on the app
+
+
+def test_its_own_windows_are_left_out_of_the_list(monkeypatch):
+    windows = [MagicMock(), MagicMock(), MagicMock()]
+    for w, title in zip(windows, ["AI Agent", "Untitled - Notepad", "AI Agent (compact)"]):
+        w.window_text.return_value = title
+    desktop = MagicMock()
+    desktop.return_value.windows.return_value = windows
+    monkeypatch.setattr(sys.modules["pywinauto"], "Desktop", desktop, raising=False)
+    assert WindowsSession().execute("windows_list_windows", {}) == "Open windows: Untitled - Notepad"

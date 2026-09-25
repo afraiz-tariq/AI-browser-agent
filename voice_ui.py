@@ -40,21 +40,22 @@ STATUS_COLORS = {
 
 
 class Choice:
-    """A Yes/No answer from the window's buttons. The first answer wins; later
-    clicks (or a double click) change nothing. Thread-safe: the window sets
-    it, the task's thread waits on it."""
+    """One answer from the window -- Yes/No (True/False), typed text, or
+    Continue/Stop. The first answer wins; later clicks (or a double click)
+    change nothing. Thread-safe: the window sets it, the task's thread waits
+    on it."""
 
     def __init__(self) -> None:
         self._event = threading.Event()
         self._lock = threading.Lock()
         self._value: bool | None = None
 
-    def answer(self, value: bool) -> bool:
+    def answer(self, value) -> bool:
         """Record an answer; False if one was already recorded."""
         with self._lock:
             if self._event.is_set():
                 return False
-            self._value = bool(value)
+            self._value = value
             self._event.set()
             return True
 
@@ -63,10 +64,10 @@ class Choice:
         return self._event.is_set()
 
     @property
-    def value(self) -> bool | None:
+    def value(self):
         return self._value
 
-    def wait(self, timeout: float) -> bool | None:
+    def wait(self, timeout: float):
         self._event.wait(timeout)
         return self._value
 
@@ -86,17 +87,37 @@ class NullUi:
     def result(self, text: str, ok: bool) -> None:
         pass
 
+    # The richer calls the app window (app_ui.py) uses; here they fall back
+    # to the basic ones, so the small tkinter window keeps working unchanged.
+    def task(self, text: str, source: str) -> None:
+        self.heard(text)
+
+    def agent_step(self, step: int, thought: str, action: str) -> None:
+        self.step(f"Step {step}: {thought}")
+
     def ask(self, prompt: str) -> Choice | None:
         return None  # no buttons: the answer can only be spoken
 
+    def ask_text(self, question: str) -> Choice | None:
+        return None  # no text box for answers: spoken only
+
+    def handoff(self, message: str) -> Choice | None:
+        return None  # no Continue button: a login wall ends the task
+
     def end_question(self) -> None:
+        pass
+
+    def paused(self, paused: bool, takeover: bool = False) -> None:
+        pass
+
+    def info(self, text: str) -> None:
         pass
 
     def show(self) -> None:
         pass
 
 
-class Overlay:
+class Overlay(NullUi):
     """The floating window. Every public method may be called from any
     thread; the work is queued and done on tkinter's own thread (the one
     running root.mainloop())."""

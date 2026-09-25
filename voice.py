@@ -43,6 +43,7 @@ with fakes -- no microphone, no model, no network.
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import os
 import warnings
 import queue
@@ -203,6 +204,66 @@ def submit_typed(text: str, state: dict, jobs: "queue.Queue") -> bool:
     return True
 
 
+class TaskControl:
+    """Stop / Pause / Take over / messages for the task that's running, shared
+    by the stop key, the app's buttons and its message box. run_task() gets
+    should_stop (which, while paused, simply waits -- the loop checks it
+    before every step and every action, so pausing holds the agent between
+    steps) and take_notes (messages typed mid-task)."""
+
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+        self._running = threading.Event()  # set = not paused
+        self._running.set()
+        self._lock = threading.Lock()
+        self._notes: list[str] = []
+
+    def reset(self) -> None:
+        with self._lock:
+            self._notes.clear()
+        self._stop.clear()
+        self._running.set()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._running.set()  # a paused task wakes up to stop
+
+    def pause(self) -> None:
+        self._running.clear()
+
+    def resume(self) -> None:
+        self._running.set()
+
+    @property
+    def paused(self) -> bool:
+        return not self._running.is_set()
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set()
+
+    def should_stop(self) -> bool:
+        while not self._running.wait(0.2):
+            if self._stop.is_set():
+                break
+        return self._stop.is_set()
+
+    def add_note(self, text: str) -> None:
+        text = text.strip()
+        if text:
+            with self._lock:
+                self._notes.append(text)
+
+    def take_notes(self) -> list[str]:
+        with self._lock:
+            notes, self._notes = self._notes, []
+        return notes
+
+
+QUESTION_WAIT_SECONDS = 120.0  # how long a question from the agent waits for a typed answer
+HANDOFF_WAIT_SECONDS = 600.0   # how long a login wall waits for you to press Continue
+
+
 def result_for_window(outcome: dict) -> str:
     """The result as the window shows it: the one-sentence summary, or for a
     failure what happened and why (not the long "what you can do")."""
@@ -229,7 +290,7 @@ class VoiceAssistant:
         self.say = say
         self.log = log
         self.run = run
-        self.stop_event = threading.Event()
+        self.control = TaskControl()
         # Set while a confirmation question is listening for yes/no, so the
         # key loop can say "no key needed" instead of "still working".
         self.answering = threading.Event()
@@ -242,6 +303,7 @@ class VoiceAssistant:
                 self.answering.clear()
 
         self.confirm = make_voice_confirm(listen_for_answer, transcribe, say, log, ui=ui)
+        self._listen_for_answer = listen_for_answer
 
     def handle_audio(self, audio) -> dict | None:
         """Returns run_task's outcome, or None if nothing usable was said."""
@@ -259,17 +321,17 @@ class VoiceAssistant:
         kind, payload = job
         if kind == "text":
             self.log(f"\nYou typed: {payload}")
-            return self.handle_text(str(payload))
+            return self.handle_text(str(payload), source="typed")
         return self.handle_audio(payload)
 
-    def handle_text(self, text: str) -> dict | None:
+    def handle_text(self, text: str, source: str = "voice") -> dict | None:
         """A task as text -- spoken (after transcribing) or typed. Same path
         either way: quick command if it is one, else the full agent."""
         text = text.strip()
         if not text:
             return None
         self.ui.status("working", "Got it...")
-        self.ui.heard(text)
+        self.ui.task(text, source)
         if self.quick is not None:
             try:
                 reply = self.quick.try_handle(text)
@@ -283,11 +345,13 @@ class VoiceAssistant:
         self.ui.status("working", "Working on it...")
         self.ui.step("Thinking about the first step...")
         self.say("On it.")
-        self.stop_event.clear()
+        self.control.reset()
         outcome = self.run(
-            text + SPOKEN_TASK_HINT, self.config, confirm_callback=self.confirm, should_stop=self.stop_event.is_set,
-            on_step=lambda step, thought, action: self.ui.step(f"Step {step}: {thought}"),
+            text + SPOKEN_TASK_HINT, self.config, confirm_callback=self.confirm, should_stop=self.control.should_stop,
+            on_step=self.ui.agent_step, task_updates=self.control.take_notes, ask_user=self.ask_user,
+            handoff=self.handoff,
         )
+        self.control.resume()
         if not outcome.get("success"):
             # Speak the headline, but show the whole explanation (WHY / WHAT YOU
             # CAN DO) on screen -- the first failure seen in voice mode only said
@@ -299,8 +363,51 @@ class VoiceAssistant:
 
     def request_stop(self) -> None:
         self.log("  [voice] stop requested -- the task will stop before its next action.")
-        self.ui.step("Stopping before the next step...")
-        self.stop_event.set()
+        self.ui.info("Stopping before the next step...")
+        self.control.stop()
+
+    def ask_user(self, question: str) -> str | None:
+        """The agent's ask_user tool: ask aloud (and in the app, with a box to
+        type into); the first answer -- spoken or typed -- counts."""
+        choice = self.ui.ask_text(question)
+        self.log(f"  [agent asks] {question}")
+        try:
+            self.say(question)
+            if choice is not None and choice.decided:
+                return str(choice.value or "")
+            try:
+                audio = self._listen_for_answer(8.0, (lambda: choice.decided) if choice is not None else None)
+                heard = "" if (choice is not None and choice.decided) else (self.transcribe(audio) or "").strip()
+            except Exception as e:  # noqa: BLE001 -- no microphone: typing still works
+                self.log(f"  [voice] could not listen for the answer ({type(e).__name__})")
+                heard = ""
+            if choice is not None and choice.decided:
+                return str(choice.value or "")
+            if heard:
+                self.log(f"  [voice] answer: {heard!r}")
+                return heard
+            if choice is not None:
+                value = choice.wait(QUESTION_WAIT_SECONDS)
+                return str(value) if value else None
+            return None
+        finally:
+            if choice is not None:
+                choice.answer("")  # closed: a late answer can't count
+            self.ui.end_question()
+
+    def handoff(self, message: str) -> bool:
+        """A login/CAPTCHA wall: your turn. Only the app has a Continue button;
+        without it the task stops, as it always has with no terminal."""
+        choice = self.ui.handoff(message)
+        if choice is None:
+            return False
+        self.say("I need you to log in or verify in the browser. Press Continue when you're done.")
+        try:
+            value = choice.wait(HANDOFF_WAIT_SECONDS)
+            return value is True
+        finally:
+            choice.answer(False)
+            self.ui.end_question()
 
 
 # ---------------------------------------------------------------------------
@@ -680,6 +787,8 @@ def main() -> None:
         _alert("The voice assistant is already running (see the icon by the clock). Not starting a second one.")
         sys.exit(1)
     mode = config.voice_mode
+    from voice_ui import Tray
+
     try:
         ptt_vk, stop_vk = key_code(config.voice_ptt_key), key_code(config.voice_stop_key)
         is_down = _key_is_down()
@@ -706,12 +815,32 @@ def main() -> None:
         print("  [voice] still working on the last task -- press the stop key to cancel it.")
         return False
 
-    ui, root, tray = None, None, None
+    ui, root, tray, app = None, None, None, None
     if config.voice_ui:
+        # The full app window (app_ui.py, pywebview) when it's installed;
+        # otherwise the small tkinter window below.
+        try:
+            from app_ui import App
+
+            app = App(
+                is_busy=lambda: state["busy"], start_task=lambda text: submit_typed(text, state, jobs),
+                control=lambda: holder["assistant"].control, on_mic=lambda: toggle_mic(),
+                output_dir=Path(LOG_PATH).parent,
+                info={"talk_key": config.voice_ptt_key, "stop_key": config.voice_stop_key, "voice_mode": mode,
+                      "provider": config.llm_provider, "model": config.llm_model, "decider": config.decider},
+            )
+            ui = app.state
+        except ImportError as e:
+            print(f"  [voice] the full app window needs pywebview (pip install pywebview) -- {e}; "
+                  "using the small window instead.")
+        except Exception as e:  # noqa: BLE001 -- e.g. WebView2 missing: the small window still works
+            print(f"  [voice] could not open the app window ({e}); using the small window instead.")
+            app = None
+    if config.voice_ui and app is None:
         try:
             import tkinter as tk
 
-            from voice_ui import Overlay, Tray
+            from voice_ui import Overlay
 
             root = tk.Tk()
             ui = Overlay(root, hint, on_status=lambda kind: tray and tray.set_status(kind), on_text=on_typed)
@@ -790,6 +919,13 @@ def main() -> None:
         state["busy"] = True
         jobs.put(("audio", audio))
 
+    def toggle_mic() -> None:
+        """The app's microphone button: the same as tapping the talk key."""
+        if state["recording"]:
+            send_recording()
+        else:
+            start_recording()
+
     ptt = PushToTalk()
 
     def tick() -> None:
@@ -817,17 +953,31 @@ def main() -> None:
 
         threading.Thread(target=read_typed, daemon=True).start()
 
-    if ui is not None:
-        def set_paused(paused: bool) -> None:
-            state["paused"] = paused
-            if paused and state["recording"]:
-                state["recording"] = False
-                recorder.stop()  # drop it: pausing means stop listening now
-            if paused:
-                show_status("paused", "Microphone paused")
-            else:
-                show_status("ready", f"Ready -- {verb.lower()} {config.voice_ptt_key}")
+    def set_paused(paused: bool) -> None:
+        state["paused"] = paused
+        if paused and state["recording"]:
+            state["recording"] = False
+            recorder.stop()  # drop it: pausing means stop listening now
+        if paused:
+            show_status("paused", "Microphone paused")
+        else:
+            show_status("ready", f"Ready -- {verb.lower()} {config.voice_ptt_key}")
 
+    if app is not None:
+        from app_ui import run_app
+
+        tray = Tray.start(on_show=lambda: app.set_mode(app.mode), on_pause=set_paused, on_quit=app.quit,
+                          log_path=LOG_PATH)
+        app.tray = tray
+        if tray is None:
+            print("  [voice] no icon by the clock (pip install pystray pillow); closing the window quits.")
+        run_app(app, tick)
+        if tray is not None:
+            tray.stop()
+        print("Bye.")
+        os._exit(0)
+
+    if ui is not None:
         tray = Tray.start(on_show=ui.show, on_pause=set_paused, on_quit=ui.quit, log_path=LOG_PATH)
         if tray is None:
             print("  [voice] no icon by the clock (pip install pystray pillow); the window's '-' hides it, "

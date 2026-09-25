@@ -14,6 +14,15 @@ full commit message.
 
 ## 2026-09-25
 
+- The app window (`app_ui.py`, `ui/`, pywebview): a chat-style feed with
+  every step, approval cards, Pause / Take over / Stop, history of past
+  tasks, compact always-on-top mode. Two-way: messages typed mid-task steer
+  the running task (added to the TASK text, the trusted slot), the agent
+  can ask you a question (new `ask_user` tool, R0, `user_tools.py`), and a
+  login wall hands over with a Continue button. The Windows arm now refuses
+  to list or touch the agent's own windows. Falls back to the small
+  tkinter window without pywebview.
+
 - Type a task instead of saying it: a text box in the voice window (and
   typing in the terminal) runs it through the same path as a spoken task,
   confirmations included. Typing "yes"/"no" answers an open question. A
